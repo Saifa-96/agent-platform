@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>02 · k3s 与期望状态循环 — 物业的记账本</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .loop { font-family: var(--sans); font-size: 0.88rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 1.5rem 0; }
+  .loop .step { border: 1.5px solid var(--ink); border-radius: 6px; padding: 0.5rem 0.8rem; background: #fff; }
+  .loop .step b { display: block; font-size: 0.92rem; }
+  .loop .step .sub { color: var(--ink-soft); font-size: 0.75rem; }
+  .loop .arrow { color: var(--accent); font-size: 1.2rem; font-weight: 700; }
+  .thermo { border: 1.5px dashed var(--ink-soft); border-radius: 6px; padding: 0.8rem 1rem; font-size: 0.9rem; color: var(--ink-soft); margin: 1.2rem 0; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 02 / 基础件 2/6</div>
+  <h1>k3s 与期望状态循环 — 物业的记账本</h1>
+  <div class="meta">≈ 15 分钟 · 前置：Lesson 01（pod）· 产出：说清"声明 vs 命令"两种哲学，以及 NAP 为什么永远不亲手创建 pod</div>
+</header>
+
+<p>上一课你认识了房间（pod）。这一课认识<b>物业</b>：pod 会死、会被搬迁、会被手动删掉，那么谁保证"该有的还在、该跑的还跑"？答案是一套哲学，而且 NAP 整个平台就压在它上面——理解了这课，后面所有课的"为什么"都会变简单。</p>
+
+<h2>两种做事的方式：命令 vs 声明</h2>
+<p>你平时写代码是<b>命令式</b>的：`起进程`、`杀进程`、`出错了再起一个`——每一步都是你发出的动作，出事靠你（或你的脚本）补救。</p>
+<p>K8s 用的是<b>声明式</b>：你只写下<b>期望状态</b>（desired state）——"这个系统应该长这样"——然后有一个永不停歇的循环负责把现实推成那个样子。</p>
+
+<div class="thermo">🌡️ <b>恒温器比方</b>：命令式 = 觉得冷了开暖气、觉得热了关掉，全天盯着；声明式 = 设 22°C，剩下交给恒温器：它<b>不停地</b>量温度、比较、修正。你给的是"目标"，不是"动作"。</div>
+
+<h2>物业的三个角色</h2>
+<table class="map">
+  <tr><th>角色</th><th>是谁</th><th>干什么</th></tr>
+  <tr><td><b>API server</b></td><td>物业前台</td><td>唯一入口：所有读写都经它，期望状态记在它身后的账本里</td></tr>
+  <tr><td><b>etcd</b></td><td>记账本</td><td>分布式键值库，存着整个集群的"期望 + 现状"。名字来历：分布式版的 <code>/etc</code> 配置目录（Linux 系统配置文件的惯例目录，见术语表）</td></tr>
+  <tr><td><b>kubelet</b></td><td>每层楼的楼层管家</td><td>跑在每个节点上的代理，<b>真正启动容器的就是它</b>。名字来历：little kube，"小管家"。</td></tr>
+</table>
+
+<div class="sidenote">注意一个常见误解：<b>control plane 从不亲手启动容器</b>。它只是记账和发通知；启动容器的是各节点上的 kubelet。所以哪怕 control plane 挂了，已经在跑的 pod 照跑——只是没人纠偏了。</div>
+
+<h2>循环：reconcile（收敛）</h2>
+<p>这个不停歇的循环叫 <b>reconcile</b>（收敛/调和）。每一圈三步：</p>
+
+<div class="loop">
+  <div class="step"><b>观察</b><span class="sub">现实里有几个 pod？</span></div>
+  <div class="arrow">→</div>
+  <div class="step"><b>对比</b><span class="sub">期望 3 个，现实 2 个，差 1</span></div>
+  <div class="arrow">→</div>
+  <div class="step"><b>行动</b><span class="sub">让 kubelet 再起 1 个</span></div>
+  <div class="arrow">↻</div>
+</div>
+
+<p>于是出现 K8s 最著名的性质：<b>自愈</b>。你手动删掉一个 pod？下一圈循环发现少了，自动补回。不是谁"监控报警后修复"，是记账本哲学的必然结果——现实只要偏离期望就会被推回去。</p>
+
+<div class="sidenote">对照 butterfly：你们的 PM2 重启策略、看门狗脚本，是"出事 → 补救"的命令式修复；K8s 把修复做成了<b>常驻循环</b>，没有"出事"这个概念，只有"偏离"。</div>
+
+<h2>k3s：单机版物业</h2>
+<p><b>k3s</b> = 轻量版 K8s 发行版（Rancher 出品）：把整个物业系统压缩成<b>一个二进制</b>，账本用内嵌 SQLite 替掉 etcd，一台 Linux 机器就能开一个完整集群。名字来历是个缩小玩笑：k8s 表示"k 和 s 中间 8 个字母"（**K**ubernete**s**），k3s 中间只剩 3 个——小一号的 Kubernetes。</p>
+<p>NAP 的 quick start 一条命令装的就是它：单机 k3s + 整套平台。生产可以换正式集群，对 NAP 来说无差别——它只跟"标准 K8s 接口"对话。</p>
+
+<h2>NAP 站在这套哲学的哪里</h2>
+<p>现在把镜头拉回 NAP。第 7 课你会看到全图，这里只记一件事：</p>
+<p>NAP 的 control-plane（平台服务）<b>从不亲手创建 pod</b>。它做的事是：往数据库里写一条期望状态——"workspace X 应该在跑"——然后 env-runner（NAP 在集群里的手臂）监听到这条记录，翻译成 K8s 的声明（一个 Deployment），交给 K8s 去收敛。</p>
+<p>真实代码注释原文（<span class="cite">control-plane/src/routes/workspaces/write.ts:238</span>）：</p>
+<pre class="yaml"><span class="c">// Control inversion (P1): record desired state; the env-runner creates the pod.</span>
+<span class="c">// （控制反转：只记录期望状态；env-runner 去创建 pod）</span></pre>
+<p>这是一层<b>套娃的声明式</b>：NAP 对自己的手臂（env-runner）声明，env-runner 再对 K8s 声明，K8s 对现实声明。每层只写"应该是什么"，不写"怎么做到"。缩容、升级、pod 崩溃重启、换集群——在这个模型下全是同一件事：<b>改账本，等收敛</b>。</p>
+
+<h2>检索练习</h2>
+
+<div class="quiz" data-answer="2">
+  <div class="q">1. 集群里真正启动容器的角色是？</div>
+  <ol class="opts">
+    <li>API server</li>
+    <li>节点上的 kubelet</li>
+    <li>etcd 账本</li>
+    <li>NAP control-plane</li>
+  </ol>
+  <div class="feedback" data-yes="对。control plane 只记账发通知，kubelet 才是动手的那个。" data-no="回忆三层角色：前台（API server）、账本（etcd）、楼层管家（kubelet）——动手的是谁？"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">2. 想让系统跑 3 个副本，声明式的做法是？</div>
+  <ol class="opts">
+    <li>手动连起三个</li>
+    <li>写脚本盯数量</li>
+    <li>写下应有三个</li>
+    <li>定时巡检补齐</li>
+  </ol>
+  <div class="feedback" data-yes="对。写"应该有 3 个"，剩下的交给 reconcile 循环。你给目标，不给动作。" data-no="手动起、盯数量、巡检补——全是命令式的"做动作"。声明式只写结果。"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">3. 有人手动删掉了一个 pod，接下来会发生？</div>
+  <ol class="opts">
+    <li>循环自动补回</li>
+    <li>永久消失掉了</li>
+    <li>集群停止服务</li>
+    <li>等人工去恢复</li>
+  </ol>
+  <div class="feedback" data-yes="对。自愈不是监控报警，是"现实偏离期望就推回"的必然结果。" data-no="想想恒温器：温度被人为打开窗户搞低了，恒温器做什么？"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">4. k3s 和标准 K8s 的关系，最准确的说法？</div>
+  <ol class="opts">
+    <li>另一套新协议</li>
+    <li>云厂商收费版</li>
+    <li>容器运行时的一种</li>
+    <li>轻量的发行版本</li>
+  </ol>
+  <div class="feedback" data-yes="对。同一套接口的轻量打包（单二进制 + 内嵌 SQLite），单机就能跑完整集群。" data-no="k3s 不是新协议也不是运行时——它是同一头牛的小号包装。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">5. NAP 的 control-plane 想"启动一个 workspace"，它实际做的是？</div>
+  <ol class="opts">
+    <li>直接创建 pod</li>
+    <li>写一条期望状态</li>
+    <li>调用 kubelet 接口</li>
+    <li>发消息给管理员</li>
+  </ol>
+  <div class="feedback" data-yes="对。写"workspace X 应该在跑"进账本，env-runner 翻译成 K8s 声明，K8s 收敛。三层套娃的声明式。" data-no="回忆那条注释：Control inversion — record desired state; the env-runner creates the pod。"></div>
+</div>
+
+<div class="next">
+  <p><b>首要阅读</b>：<a href="https://kubernetes.io/zh-cn/docs/concepts/architecture/">K8s 官方中文「集群架构」</a>——只读"控制平面组件"和"kubelet"两节，其他跳过（还不到时候）。</p>
+  <p><b>动手（可选，5 分钟）</b>：打开 <span class="cite">control-plane/src/routes/workspaces/write.ts</span>，搜 <code>Control inversion</code>，读那两行注释和它上面的代码——你刚学的哲学就压在这一行里。</p>
+  <p><b>下一课预告</b>：Deployment 与 StatefulSet——pod 的两种管理员。为什么"无状态服务用 Deployment、要稳定身份的用 StatefulSet"，以及 NAP 为什么两种都用。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：卡住就问——"reconcile 多久跑一圈"、"etcd 和 PostgreSQL 有什么区别"、"声明式到底好在哪"，都是好问题。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 02（基础件系列 2/6）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="0001-pod-and-container.html">上一课：Pod 与容器</a> ·
+  <a href="https://kubernetes.io/zh-cn/docs/concepts/architecture/">K8s 官方：集群架构</a>
+</footer>
+</main>
+</body>
+</html>

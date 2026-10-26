@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>04 · Service 与 DNS — 找到总在搬家的 pod</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .svc { font-family: var(--sans); font-size: 0.85rem; margin: 1.4rem 0; }
+  .svc .vip { background: var(--accent-soft); border: 1.5px solid var(--ink); border-radius: 7px; padding: 0.5rem 0.9rem; max-width: 30rem; margin: 0 auto; }
+  .svc .arrowline { text-align: center; color: var(--ink-soft); font-size: 0.72rem; padding: 0.25rem 0; }
+  .svc .pods3 { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; margin: 0.4rem 0; }
+  .svc .pods3 .p { border: 1.5px solid var(--ink); border-radius: 5px; padding: 0.35rem 0.6rem; background: #fff; text-align: center; }
+  .svc .pods3 .p .ip { font-family: var(--mono); font-size: 0.68rem; color: var(--ink-soft); }
+  .svc .pods3 .p.dead { border-style: dashed; opacity: 0.55; text-decoration: line-through; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 04 / 基础件 4/6</div>
+  <h1>Service 与 DNS — 找到总在搬家的 pod</h1>
+  <div class="meta">≈ 15 分钟 · 前置：Lesson 03（Deployment/StatefulSet、label 认领）· 产出：说清两种寻址方式和 NAP 那个"故意不用 VIP"的原因</div>
+</header>
+
+<p>前两课留了一个没兑现的问题：pod 会死而复生（自愈），而<b>每次复活都换 IP</b>——IP 是调度时从节点"租"来的。可是调用方需要一个<b>稳定地址</b>。这对矛盾由 <b>Service</b> 解决——K8s 里名字最迷惑的对象（它叫 Service，但它不是"服务"，只是<b>一张稳定的门牌</b>）。</p>
+
+<h2>ClusterIP Service：一块稳定的虚拟门牌</h2>
+<div class="svc">
+  <div class="vip">🏷️ 门牌：<code>my-agent</code> → 虚拟 IP <code>10.96.1.5</code>（VIP，Virtual IP）<br><span style="font-size:0.78rem;color:var(--ink-soft)">集群内 DNS：<code>my-agent.default.svc.cluster.local</code></span></div>
+  <div class="arrowline">▼ 请求到达门牌后，自动分发给名单里的 pod（轮询）</div>
+  <div class="pods3">
+    <div class="p">pod<br><span class="ip">10.244.2.7</span></div>
+    <div class="p dead">pod（刚死了）<br><span class="ip">10.244.1.3</span></div>
+    <div class="p">pod<br><span class="ip">10.244.3.9</span></div>
+  </div>
+  <div class="arrowline">▲ 死的自动除名、新生的自动进名单——门牌永远不用改</div>
+</div>
+<p>三件事记住就够：</p>
+<ul>
+  <li><b>认领规则还是 label</b>：Service 用 selector 挑 pod（还记得第 3 课清单里 Deployment 给 pod 盖的 <code>app: my-agent</code> 标签吗？Service 就认它）。同一条标签把 Deployment 和 Service 缝在一起。</li>
+  <li><b>名单自动维护</b>：只有活着且通过健康检查（Ready）的 pod 在名单里。pod 换 IP 无所谓——名单实时更新，门牌不变。</li>
+  <li><b>VIP 后面是轮询</b>：请求一个一个分给名单里的 pod。单副本时无所谓；多副本时……记住这个伏笔。</li>
+</ul>
+
+<h2>Headless Service：不要门牌，要名册</h2>
+<p>另一种 Service 声明 <code>clusterIP: None</code>，叫 <b>headless</b>（无头——没有 VIP 这颗"头"）。它不给你虚拟门牌，DNS 查询直接返回<b>每个 pod 自己的地址</b>。配合 StatefulSet 还有一个关键福利：每个副本有<b>带序号的稳定 DNS 名</b>——</p>
+<pre class="yaml"><span class="c"># StatefulSet db + headless svc db-h 的组合下：</span>
+db-0.db-h.default.svc.cluster.local   <span class="c"># ← 永远指副本 0（不管它死过几次、IP 换过几个）</span>
+db-1.db-h.default.svc.cluster.local   <span class="c"># ← 永远指副本 1</span></pre>
+<p>这正是第 3 课说的"稳定序号 → 稳定网络地址"的兑现处：<b>身份（序号）变成了可寻址的名字</b>。DNS 里的事都由集群内的 <b>CoreDNS</b>（一个跑在集群里的域名解析服务）照着账本实时回答。</p>
+
+<h2>NAP 的选择：两种都用，一处故意不用</h2>
+<table class="map">
+  <tr><th></th><th>static workspace</th><th>auto-scaling workspace</th></tr>
+  <tr><td>寻址</td><td>ClusterIP Service（VIP）</td><td><b>headless</b> + per-ordinal DNS</td></tr>
+  <tr><td>为什么</td><td>单副本，轮询无所谓——VIP 最省事</td><td>多副本，<b>轮询会坏事</b></td></tr>
+</table>
+<p>多副本时轮询坏什么事？<b>会话亲和（session affinity）</b>：一个 turn 正在副本 2 的 agent 进程里跑着（内存里有现场），断线重连的下一个请求若被 VIP 轮询分到副本 3——那边没有这个正在跑的 turn，现场就断了。文件没事（大家共享同一块 RWX 卷，第 3 课），但<b>正在执行的进程现场只在一个副本里</b>。</p>
+<p>所以 NAP 的路由（<span class="cite">control-plane/src/lib/workspace-address.ts</span>）是这样写的：会话绑定了哪个副本，就解析哪个副本的 per-ordinal DNS 名，精确投递；没绑定就挑任意就绪副本；一个都没有（缩到零）时解析 headless 名，等第一个 pod 就绪立即接上。代码注释原话："a VIP would round-robin across replicas and defeat session affinity"。</p>
+
+<div class="sidenote">对照 butterfly：你们用 PM2 cluster 模式时也有同样的问题——请求落到哪个 worker、worker 里有没有这个会话的现场。你们在应用层解决；K8s 给的零件是 headless + 逐副本地址，让"会话跟着副本走"变成寻址层的事。</div>
+
+<h2>检索练习</h2>
+
+<div class="quiz" data-answer="4">
+  <div class="q">1. pod 死而复生（自愈补回）后，它的 IP 会？</div>
+  <ol class="opts">
+    <li>保持永远不变</li>
+    <li>立即变成两个</li>
+    <li>由管理员指定</li>
+    <li>换成一个新</li>
+  </ol>
+  <div class="feedback" data-yes="对。IP 是调度时从节点租的，重建=重新调度=新 IP。所以需要 Service 这张稳定门牌。" data-no="回忆开头：IP 是“租来的”，重建后重新调度——租约自然换了。"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">2. ClusterIP Service 提供给调用方的是？</div>
+  <ol class="opts">
+    <li>稳定虚拟门牌</li>
+    <li>更大的带宽</li>
+    <li>外网访问能力</li>
+    <li>数据持久化</li>
+  </ol>
+  <div class="feedback" data-yes="对。一个 VIP + DNS 名，背后名单自动增删——门牌永远不变。" data-no="它只是“一张稳定的门牌+自动维护的转报名单”，不带带宽/外网/存储能力。"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">3. Service 靠什么认领"哪些 pod 归我转接"？</div>
+  <ol class="opts">
+    <li>pod 的名字</li>
+    <li>IP 段的范围</li>
+    <li>label 标签选择</li>
+    <li>创建先后顺序</li>
+  </ol>
+  <div class="feedback" data-yes="对。和 Deployment 认领 pod 用同一套 label 机制——第 3 课清单里 template 盖的标签在这里被 Service 消费。" data-no="回忆第 3 课 YAML 里 selector.matchLabels 那两行——Service 用的是同一种东西。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">4. headless Service（clusterIP: None）的 DNS 查询返回？</div>
+  <ol class="opts">
+    <li>一个虚拟的 IP</li>
+    <li>各 pod 自己的地址</li>
+    <li>报错说找不到</li>
+    <li>最闲的那个</li>
+  </ol>
+  <div class="feedback" data-yes="对。没有 VIP 这颗“头”，DNS 直接报名册——配合 StatefulSet 还带稳定序号名。" data-no="“无头”= 没有 VIP。没有门牌可报，DNS 就把名册直接给你。"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">5. NAP 的 auto-scaling workspace 不用 VIP，因为轮询会？</div>
+  <ol class="opts">
+    <li>破坏会话亲和</li>
+    <li>消耗更多费用</li>
+    <li>拖慢 NFS 卷</li>
+    <li>用尽 IP 地址</li>
+  </ol>
+  <div class="feedback" data-yes="对。正在副本 2 里跑的 turn，重连请求被分到副本 3 就断了现场——所以逐副本精确投递。" data-no="想想“turn 正在副本 2 的进程内存里跑”这句话——轮询会把下一个请求送到哪？"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">6. turn 在副本 2 上跑，断线重连后必须？</div>
+  <ol class="opts">
+    <li>随便找个副本</li>
+    <li>找回副本 2</li>
+    <li>重启整个集群</li>
+    <li>重新排队一次</li>
+  </ol>
+  <div class="feedback" data-yes="对。会话亲和：经 headless 的 per-ordinal DNS（db-2 名字）精确路由回原副本，现场还在。" data-no="现场（正在执行的 turn）只存在于一个副本的进程里——重连要去哪？"></div>
+</div>
+
+<div class="next">
+  <p><b>首要阅读</b>：<a href="https://kubernetes.io/zh-cn/docs/concepts/services-networking/service/">K8s 官方中文「Service」</a>——读"将 Pod 暴露给外部流量"之前的部分即可，VIP/selector/headless 三段。</p>
+  <p><b>动手（可选，5 分钟）</b>：打开 <span class="cite">control-plane/src/lib/workspace-address.ts</span>，读文件开头那段大注释——你刚学的所有东西（VIP 轮询、per-ordinal DNS、headless 兜底）在 40 行真实注释里全部出现。</p>
+  <p><b>下一课预告</b>：PVC 与 StorageClass——比 pod 活得久的磁盘。RWO/RWX 的悬念、"每 workspace 一块卷"的账本、以及 NFS 供给链。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：卡住就问——"VIP 背后到底怎么实现的"、"CoreDNS 怎么知道 pod 就绪了"，都是好延伸。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 04（基础件系列 4/6）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="0003-deployment-vs-statefulset.html">上一课：Deployment 与 StatefulSet</a> ·
+  <a href="https://kubernetes.io/zh-cn/docs/concepts/services-networking/service/">K8s 官方：Service</a>
+</footer>
+</main>
+</body>
+</html>

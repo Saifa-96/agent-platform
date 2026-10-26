@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 · 一条消息的旅程 — NAP 全景地图</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 07 / 会师点（先学完 0001–0006 基础件）</div>
+  <h1>一条消息的旅程 — NAP 全景地图</h1>
+  <div class="meta">≈ 20 分钟 · 前置：pod/k3s/工作负载/Service/PVC/MCP 六课 · 产出：不看资料复述完整旅程 + 说出每类状态的存活层</div>
+</header>
+
+<p>你写过引擎的内部——turn 循环、工具注册、闸门，这些都是你的主场。平台设计的第一课不是学新零件，而是换<b>观察位置</b>：从"我怎么执行一个 turn"移到"系统怎么托管一万个 turn"。最好的办法是跟着一条消息走完全程，把每个组件的<b>生死边界</b>记在脑子里。这张地图之后的所有课程都在它的某个格子里加深。</p>
+
+<h2>旅程：入口 → 交付</h2>
+
+<div class="flow">
+  <div class="hop"><b>① 通道</b>Web UI / API / 定时 / webhook<br><span class="where">channel-gateway, scheduler</span></div>
+  <div class="arrow">→</div>
+  <div class="hop"><b>② 调度四关</b>会话租约 → 容量门 → 唤醒 → 选副本<br><span class="where">chat/executeChat.ts</span></div>
+  <div class="arrow">→</div>
+  <div class="hop"><b>③ agent pod</b>core 适配器收到 /chat，LLM 开始决策<br><span class="where">agents/*/src, ACP</span></div>
+</div>
+<div class="flow">
+  <div class="hop"><b>④a 直接写</b>Write/Bash 写 /workspace<br><span class="where">落在 PVC</span></div>
+  <div class="arrow">→</div>
+  <div class="hop"><b>④b 走沙箱</b>MCP 建沙箱 → 跑重活 → 拉回产物<br><span class="where">mcp/tools/sandbox.ts</span></div>
+  <div class="arrow">→</div>
+  <div class="hop"><b>⑤ 交付</b>dufs 文件面板 / 下载 / 分享 URL<br><span class="where">routes/workspaces/agent.ts</span></div>
+</div>
+
+<div class="sidenote">四关的顺序有讲究：先占会话租约（一个 session 同时只能有一个 turn），再过容量门（auto-scaling 有并发上限，超了 503），然后才谈唤醒和选副本——前两关不过，后面的钱一分不花。</div>
+
+<p>②到③之间还有一件关键事：用户消息<b>先落 PostgreSQL</b>，再 POST 给 pod。以及整个响应流不是直通车的——agent 的 SSE 穿过控制面的<b>拦截器</b>（<span class="cite">lib/sse.ts</span>），消息、统计、会话都在这里被实时持久化。这就是平台"看得到一切"的原因，也是断线重连、pod 中途死掉都不丢会话的原因。</p>
+
+<h2>三个生死边界（本课真正要记的东西）</h2>
+
+<table class="map">
+  <tr><th>状态</th><th>真身在哪</th><th>pod 死了？</th></tr>
+  <tr><td>会话与消息</td><td>PostgreSQL（SSE 拦截器实时写）</td><td>活</td></tr>
+  <tr><td>/workspace 文件<br><span style="color:var(--ink-soft)">（含 agent 的 HOME：transcripts、skills）</span></td><td>workspace 专属 PVC（默认 10Gi）</td><td>活</td></tr>
+  <tr><td>容器内 /workspace 之外的一切</td><td>pod 自身文件系统</td><td>死</td></tr>
+  <tr><td>沙箱里的东西</td><td>独立集群，默认 1 小时自毁</td><td>本来就要死</td></tr>
+</table>
+
+<p>推论：pod 是<b>牲口不是宠物</b>——缩容、重建、升级、换 core 都不构成数据事件，所以平台敢把它随便杀。真正的销毁只有一条路径：删 workspace（PVC 和 PG 记录一起清）。</p>
+
+<h2>和 butterfly 的对照（你的锚点）</h2>
+<ul>
+  <li>调度四关 ≈ 你们的 turn-state 收场闸，但反向：你们闸的是"一步内别写坏"，平台闸的是"多租户下别挤爆"。</li>
+  <li>SSE 拦截器 ≈ 你们引擎里 session 持久化的位置，但被提到了 agent 进程<b>外面</b>——持久化属于平台，不属于引擎。</li>
+  <li>沙箱"产物必须显式拉回" ≈ 你们 K8s 沙箱同一条纪律，NAP 把它写成了工具语义。</li>
+</ul>
+<p>术语的定义见<a href="../reference/glossary.html">术语表</a>——后面所有课程共用它。</p>
+
+<h2>检索练习</h2>
+<p>现在合上上面的内容，凭记忆答。答错说明那一格还没进长期存储，回去看对应段落。</p>
+
+<div class="quiz" data-answer="3">
+  <div class="q">1. 消息到达 pod 之前，控制面依次过四关。第三关是？</div>
+  <ol class="opts">
+    <li>占住会话租约</li>
+    <li>通过容量之门</li>
+    <li>唤醒沉睡副本</li>
+    <li>挑选就绪副本</li>
+  </ol>
+  <div class="feedback" data-yes="对。顺序：租约 → 容量 → 唤醒 → 选副本。前两关不过，不花唤醒的钱。" data-no="顺序是：租约 → 容量 → 唤醒 → 选副本。提示：先确定这个 session 没人在跑，再确定这个 workspace 还装得下。"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">2. pod 被销毁后，一定还活着的是？</div>
+  <ol class="opts">
+    <li>会话消息记录</li>
+    <li>容器系统缓存</li>
+    <li>沙箱临时文件</li>
+    <li>pod 进程内存</li>
+  </ol>
+  <div class="feedback" data-yes="对。会话真身在 PostgreSQL，是 SSE 拦截器实时写的，和 pod 无关。" data-no="想"哪些数据活在 pod 外面"：会话消息的持久化发生在控制面，不在 agent 进程里。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">3. agent 转录文件（transcripts、skills）的真身在？</div>
+  <ol class="opts">
+    <li>pod 的内存里</li>
+    <li>PVC 的卷上</li>
+    <li>浏览器本地里</li>
+    <li>沙箱的盘里</li>
+  </ol>
+  <div class="feedback" data-yes="对。agent 容器的 HOME 被指到 /workspace/.home，整个落在 PVC 上——连换 core 都能读旧 core 的转录。" data-no="关键细节：agent 容器的 HOME 不在容器文件系统，被指到 /workspace/.home。"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">4. auto-scaling 工作区缩到零后，用户发来消息会？</div>
+  <ol class="opts">
+    <li>报错说区已停</li>
+    <li>消息排队过夜</li>
+    <li>转给别区处理</li>
+    <li>冷启动再处理</li>
+  </ol>
+  <div class="feedback" data-yes="对。ensureWorkspaceRunning 拉起 pod 并轮询健康，90 秒预算内接上这条消息。这是拿延迟换零闲置成本。" data-no="回忆 idle GC 的注释：可逆——停止只是回收 CPU/内存，下一条 turn 自动唤醒。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">5. agent 想用平台能力（如建沙箱），调用经过？</div>
+  <ol class="opts">
+    <li>直连沙箱服务</li>
+    <li>mcp-forward 一跳</li>
+    <li>写文件到 AFS</li>
+    <li>经 dufs 文件服</li>
+  </ol>
+  <div class="feedback" data-yes="对。pod 内 mcp-forward 出站时附凭证，控制面按会话令牌反解上下文再注册工具集——core 配置里零 secret。" data-no="agent CLI 的 MCP 配置指向 pod 内的转发层，它才持凭证去敲控制面。"></div>
+</div>
+
+<div class="next">
+  <p><b>首要阅读</b>：官方概念文档 <a href="https://docs.neutree.ai/nap/">docs.neutree.ai/nap</a>（本地 <span class="cite">docs-site/src/content/docs/zh-cn/concepts/overview.md</span>，中文版齐全）——它是这套地图的官方版本，读完校对一遍你脑中的图。</p>
+  <p><b>下一课预告</b>：控制反转——控制面只写“期望状态”，env-runner 负责把现实搬过去。为什么这个哲学让缩容、升级、远程集群都变成同一件事。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：任何一格含糊——比如"为什么选副本要在唤醒之后"、"SSE 拦截器具体拦了什么"——直接回来问我，别带着模糊的地图进下一课。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 07 ·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="https://docs.neutree.ai/nap/">官方文档</a>
+</footer>
+</main>
+</body>
+</html>

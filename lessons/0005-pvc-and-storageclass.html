@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05 · PVC 与 StorageClass —— 比 pod 活得久的磁盘（细化版）</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .storage-chain { font-family: var(--sans); font-size: 0.86rem; display: flex; gap: 0.6rem; align-items: stretch; flex-wrap: wrap; margin: 1.5rem 0; }
+  .storage-chain .box { flex: 1 1 10rem; border: 1.5px solid var(--ink); border-radius: 7px; padding: 0.55rem 0.8rem; background: #fff; }
+  .storage-chain .box b { display: block; }
+  .storage-chain .box .sub { color: var(--ink-soft); font-size: 0.75rem; line-height: 1.5; }
+  .storage-chain .arrow { align-self: center; color: var(--accent); font-size: 1.2rem; font-weight: 700; }
+  .timeline { font-family: var(--sans); font-size: 0.86rem; border-left: 3px solid var(--accent); margin: 1.5rem 0 1.5rem 0.5rem; padding-left: 1rem; }
+  .timeline .t { margin: 0.9rem 0; }
+  .timeline .t b.when { font-family: var(--mono); color: var(--accent); font-size: 0.8rem; }
+  .timeline .t .what { line-height: 1.7; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 05 / 基础件 5/6 · 细化版</div>
+  <h1>PVC 与 StorageClass —— 比 pod 活得久的磁盘</h1>
+  <div class="meta">约 20 分钟 · 前置：第 1 课（挂载与卷）、第 3 课（RWO/RWX）· 本课产出：能按顺序讲出存储供给链的五个步骤，能说清 NAP 数据的生死边界 · 配套练习：exercises/0001-mini-env-runner</div>
+</header>
+
+<p>第 1 课里我们留了一条线索：pod 的文件系统会随 pod 一起消失，而 <code>/workspace</code> 里的文件却能存活，因为这些文件不在 pod 的文件系统里，而是挂在一块"卷"上。这一课拆解卷的机制。你会发现它仍然是声明式哲学的又一次应用——这是第三次遇到同一套思想，这次的对象是你的磁盘。</p>
+
+<h2>先看没有 PVC 的世界</h2>
+<p>假设 K8s 没有提供卷的抽象，你要给 agent 分配一块盘，就必须亲自做这些事：先弄清楚这个集群用的是什么存储技术（NFS？Ceph？云盘？），拿到服务器的地址和路径；然后自己创建一块盘，把它的具体地址写进 pod 的清单。这样做的后果是：清单和底层基础设施被焊死在一起，换一个集群就要修改所有清单。</p>
+<p>这个问题和"必须自己指定 pod 落在哪台机器上"属于同一类问题，而 K8s 对这两件事的解决办法也是一样的：<b>增加一层间接，把"要什么"和"怎么给"分开</b>。你不需要声明"使用 NFS 服务器 X 的目录 Y"，正如你不需要声明"把 pod 调度到节点 2"；你只需要提出需求，剩下的事由别人决定。</p>
+
+<h2>三个对象，一条供给链</h2>
+<div class="storage-chain">
+  <div class="box"><b>PVC（申请单）</b><span class="sub">你写下的声明："要 10Gi、RWO 的一块盘"<br>PersistentVolumeClaim</span></div>
+  <div class="arrow">→</div>
+  <div class="box"><b>StorageClass（供货规则）</b><span class="sub">申请单由哪条供应链满足：NFS？云盘？CephFS？<br>背后是 provisioner（供货程序）</span></div>
+  <div class="arrow">→</div>
+  <div class="box"><b>PV（交付的货）</b><span class="sub">provisioner 真实创建的存储资源，<br>记录着数据真身的地址</span></div>
+</div>
+
+<p>三个对象的职责可以这样概括：<b>PVC 是消费者提出的需求，PV 是供应商交付的货，StorageClass 是连接两者的供货规则。</b>下面是它们各自的真实样子：</p>
+
+<pre class="yaml"><span class="c"># PVC —— 你写的申请单，保存在你的 namespace 里</span>
+<span class="k">apiVersion:</span> v1
+<span class="k">kind:</span> PersistentVolumeClaim
+<span class="k">metadata:</span> { <span class="k">name:</span> agent-workspace }
+<span class="k">spec:</span>
+  <span class="k">accessModes:</span> ["ReadWriteOnce"]
+  <span class="k">resources:</span> { <span class="k">requests:</span> { <span class="k">storage:</span> 10Gi } }
+  <span class="k">storageClassName:</span> nfs-nap        <span class="c"># 由哪条供应链供货（省略则使用集群的默认值）</span>
+
+<span class="c"># PV —— provisioner 交付的货（集群级对象，通常不需要你接触）</span>
+<span class="k">apiVersion:</span> v1
+<span class="k">kind:</span> PersistentVolume
+<span class="k">metadata:</span> { <span class="k">name:</span> pvc-abc123-agent-workspace }
+<span class="k">spec:</span>
+  <span class="k">capacity:</span> { <span class="k">storage:</span> 10Gi }
+  <span class="k">nfs:</span> { <span class="k">server:</span> 10.96.1.9, <span class="k">path:</span> "/exports/xxx" }  <span class="c"># ★ 数据真身的地址就在这两个字段里</span>
+  <span class="k">claimRef:</span> { <span class="k">name:</span> agent-workspace }                <span class="c"># ★ 绑定记录：这块货交付给哪张申请单</span>
+
+<span class="c"># StorageClass —— 管理员部署集群时配置好的供货规则（你只消费，不管理）</span>
+<span class="k">apiVersion:</span> storage.k8s.io/v1
+<span class="k">kind:</span> StorageClass
+<span class="k">metadata:</span> { <span class="k">name:</span> nfs-nap }
+<span class="k">provisioner:</span> nfs-subdir-external-provisioner   <span class="c"># 供货程序的名称</span>
+<span class="k">parameters:</span> { <span class="k">archiveOnDelete:</span> "true" }      <span class="c"># 删除 PVC 时先归档，而不是立即抹掉数据</span>
+<span class="k">reclaimPolicy:</span> Delete</pre>
+
+<h2>时间线：一块盘的一生</h2>
+<p>下面这条时间线把三个对象串成了一个完整的故事。学完这一课，你应该能做到不看资料、按顺序讲出这五步。</p>
+
+<div class="timeline">
+  <div class="t"><b class="when">T0</b><div class="what">你提交 PVC 申请单。此时它的状态是 <b>Pending</b>，意思是申请单已经递出，但货还没有到。</div></div>
+  <div class="t"><b class="when">T1</b><div class="what">provisioner 注意到这张 Pending 的申请单，自动完成三件事：在 NFS 服务器上创建一个子目录；生成一个 PV 对象，把子目录的地址记录进去；把这块 PV 绑定给这张 PVC。绑定完成后，PVC 的状态变为 <b>Bound</b>，相当于收货完成。</div></div>
+  <div class="t"><b class="when">T2</b><div class="what">你提交 Deployment，清单里通过 <code>claimName</code> 引用这张 PVC。pod 启动时，kubelet 拿着 PVC 的名字找到与它绑定的 PV，再按照 PV 里记录的地址完成挂载。从此，容器里的 <code>/data</code> 目录实际上就是 NFS 服务器上的那个子目录。</div></div>
+  <div class="t"><b class="when">T3</b><div class="what">pod 死掉重建，或者被调度到另一台机器，都不影响数据：新机器上的 kubelet 拿着<b>同一个 PVC 的名字</b>，找到<b>同一块 PV</b>，按照<b>同一个地址</b>挂载，看到的仍然是<b>同一份数据</b>。这一步就是整个机制存在的意义：pod 通过"PVC 名字"这个间接层取盘，而不是通过地址。地址、机器、pod 都在变，名字永远不变。</div></div>
+  <div class="t"><b class="when">T4</b><div class="what">你删除 PVC，此时 reclaimPolicy 开始生效：provisioner 会删除（或按配置归档）NFS 上的那个子目录。到这一步，数据才真正死亡。</div></div>
+</div>
+
+<p>收货是否完成，可以随时用一条命令查询：</p>
+<pre class="yaml">kubectl get pvc agent-workspace
+
+NAME             STATUS   VOLUME                       CAPACITY
+agent-workspace  Bound    pvc-abc123-agent-workspace   10Gi
+                 ↑已收货   ↑绑定的 PV 名称</pre>
+
+<div class="sidenote">这一课确实是六个基础件里最难的一篇：三个对象的职责彼此重叠；provisioner 在后台异步工作，"发货"的过程完全看不见；页面上还满是新名词。T0 到 T4 这条时间线，就是把名词串成故事的那条主线——先做到能按顺序讲出这五步，再回来做本页的测验。</div>
+
+<h2>RWO 与 RWX：选择供应链就是选择访问模式</h2>
+<p>第 3 课里你已经把 RWO 和 RWX 问得很透：RWO 表示同一时刻只允许一台机器挂载，块设备（云盘、Ceph RBD）只能工作在这种模式下；RWX 表示多台机器可以同时挂载同一块卷，NFS 这类网络文件系统才能做到。这里再补一个连接点：<b>访问模式是 StorageClass 的能力，PVC 自己无法更改</b>。因此，NAP 在创建 auto-scaling workspace 之前，要先检查环境里是否存在支持 RWX 的 StorageClass——没有它，多个副本就无法共享同一块 /workspace 卷。</p>
+
+<h2>NAP 的存储账本（对应真实代码）</h2>
+<table class="map">
+  <tr><th>事实</th><th>对应代码</th></tr>
+  <tr><td>每个 workspace 拥有一块独立的 PVC，名字由纯函数派生：<code>&lt;workspace-id&gt;-workspace</code></td><td><span class="cite">internal/k8s-provider/support.ts:73</span></td></tr>
+  <tr><td>static workspace 使用 RWO 单机盘；auto-scaling workspace 使用一块 RWX 卷，并且不设置 volumeClaimTemplates——所有副本共享同一块卷，而不是各配各的</td><td><span class="cite">auto-scaling-workload.ts</span></td></tr>
+  <tr><td>卷默认 10Gi，可以按 workspace 覆盖；扩容只增不减</td><td><span class="cite">expandWorkspacePvc（static-workload.ts）</span></td></tr>
+  <tr><td>StorageClass 在创建时写入 PVC，之后不可更换——所以迁移的真实含义是搬运数据</td><td>K8s 机制本身</td></tr>
+  <tr><td>删除 workspace 时，Deployment、Service、PVC 三者一起删除——这是数据真正的死亡点（对应时间线的 T4）</td><td><span class="cite">static-workload.ts destroy()</span></td></tr>
+  <tr><td>自部署默认使用 NFS 供应链：nfs-subdir-external-provisioner 负责供货；单机部署时还会在集群内运行一个 NFS server，数据就落在那台节点的磁盘上</td><td><span class="cite">self-host/manifests/nfs-server.yaml</span></td></tr>
+</table>
+
+<div class="sidenote">对照 butterfly：你们的沙箱 pod 挂载的是一块全体共享的 PVC（K8S_PVC_CLAIM_NAME=data）——机制相同，区别在于"所有租户共用一块盘"和 NAP 的"每个 workspace 一块盘、各自限额"。<b>本课的练习是必做环节</b>：<a href="../../exercises/0001-mini-env-runner/TASK.md">exercises/0001-mini-env-runner</a>——亲手把 T0 到 T4 走一遍，第五课才算真正焊牢。</div>
+
+<h2>检索练习</h2>
+
+<div class="quiz" data-answer="2">
+  <div class="q">1. PVC、PV、StorageClass 三个对象里，哪一个是你亲手写下的"申请单"？</div>
+  <ol class="opts">
+    <li>PV</li>
+    <li>PVC</li>
+    <li>StorageClass</li>
+    <li>provisioner</li>
+  </ol>
+  <div class="feedback" data-yes="正确。PVC（其中的 Claim 就是"申请"之意）只写需求——"要 10Gi、RWO"，供给由别人负责。" data-no="提示：名字里带 Claim（申请）的那个。"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">2. 真正动手创建存储卷的角色是谁？</div>
+  <ol class="opts">
+    <li>API server</li>
+    <li>scheduler</li>
+    <li>provisioner</li>
+    <li>kubelet</li>
+  </ol>
+  <div class="feedback" data-yes="正确。StorageClass 背后的 provisioner（供货程序）照着申请单交付，创建 PV 并完成绑定（时间线的 T1）。" data-no="提示：回顾供给链的三格图，中间那一格背后动手的"供货程序"叫什么？"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">3. PVC 的状态从 Pending 变成 Bound，意味着什么？</div>
+  <ol class="opts">
+    <li>pod 已经就绪</li>
+    <li>申请被拒绝了</li>
+    <li>provisioner 已交货</li>
+    <li>磁盘已经用满</li>
+  </ol>
+  <div class="feedback" data-yes="正确。Bound 表示收货完成：PV 已经创建并绑定给这张申请单（T1 完成）。这一步和 pod 无关——pod 要到 T2 才出场。" data-no="提示：Bound 是"收货回执"——货（PV）已经交付并绑定给这张申请单。"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">4. pod 被调度到一台新机器后，kubelet 如何知道去哪里挂载数据？</div>
+  <ol class="opts">
+    <li>数据跟着 pod 走</li>
+    <li>每次重新上传</li>
+    <li>读 PV 里记的地址</li>
+    <li>向调度器去查询</li>
+  </ol>
+  <div class="feedback" data-yes="正确。kubelet 拿着 PVC 的名字，找到绑定的 PV，按照里面记录的地址挂载（时间线的 T3）。数据不动，pod 随便搬家。" data-no="提示：挂载不是拷贝——数据不跟着 pod 走，kubelet 是照着一份"地址记录"去找现成的数据。"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">5. NAP 的 auto-scaling workspace，它的 PVC 是什么形态？</div>
+  <ol class="opts">
+    <li>每个副本各一块</li>
+    <li>根本没有 PVC</li>
+    <li>全体租户合用</li>
+    <li>全体副本合用</li>
+  </ol>
+  <div class="feedback" data-yes="正确。不设置 volumeClaimTemplates：一块 RWX 卷由所有副本同时挂载——文件自始至终只有一份。" data-no="提示：回忆第 3 课的"创造性挪用"——要了身份，没要独立盘。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">6. 想把一块 PVC 从 NFS 换到 CephFS 供应链，正确的做法是什么？</div>
+  <ol class="opts">
+    <li>修改 PVC 的字段</li>
+    <li>新建再搬数据</li>
+    <li>重启整个集群</li>
+    <li>升级供货商配置</li>
+  </ol>
+  <div class="feedback" data-yes="正确。StorageClass 在创建时就固定在 PVC 上，K8s 不允许更换——所以迁移等于"新链路 + 数据搬运"。" data-no="提示：供应链固定在 PVC 上，改不了——只能"新建 + 搬运"。"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">7. 在 NAP 里，workspace 数据真正的"死亡点"是什么时刻？</div>
+  <ol class="opts">
+    <li>pod 被销毁时</li>
+    <li>节点重启之时</li>
+    <li>用户登出账号</li>
+    <li>删除 workspace</li>
+  </ol>
+  <div class="feedback" data-yes="正确。destroy() 把 Deployment、Service、PVC 三件套一起删除（时间线的 T4），PG 里的记录也在同一事务中清掉——除此之外的一切操作都可逆。" data-no="提示：回顾表格最后一行——哪个操作会连 PVC 一起删除？"></div>
+</div>
+
+<div class="next">
+  <p><b>首要阅读</b>：<a href="https://kubernetes.io/zh-cn/docs/concepts/storage/persistent-volumes/">K8s 官方中文文档「持久卷」</a>——只读"持久卷申明和持久卷"与"访问模式"两节，卷快照等章节暂时跳过。</p>
+  <p><b>动手环节（本课必做）</b>：<a href="../../exercises/0001-mini-env-runner/TASK.md">exercises/0001-mini-env-runner</a>——亲手写一个 mini env-runner，完整经历一遍 T0 到 T4，并证明"文件比 pod 活得久"。</p>
+  <p><b>下一课预告</b>：MCP 基础——agent 如何"长出工具"。这是最后一个基础件，之后所有内容在第 7 课会师。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：练习中卡住就直接来问——k3d 装不上、JSON 喂给 kubectl 报错、Ready 状态判断不准，这些都在我的职责范围内。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 05（基础件系列 5/6 · 细化版）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="0004-service-and-dns.html">上一课：Service 与 DNS</a> ·
+  <a href="https://kubernetes.io/zh-cn/docs/concepts/storage/persistent-volumes/">K8s 官方：持久卷</a>
+</footer>
+</main>
+</body>
+</html>

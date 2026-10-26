@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 · Pod 与容器 — agent 住的房间</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .apt { font-family: var(--sans); font-size: 0.85rem; margin: 1.5rem 0; }
+  .apt .floor { border: 2px solid var(--ink); border-radius: 8px; padding: 0.7rem 0.9rem; margin: 0.4rem 0; }
+  .apt .floor .label { font-weight: 700; font-size: 0.78rem; color: var(--ink-soft); letter-spacing: 0.1em; }
+  .apt .rooms { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .apt .room { flex: 1 1 9rem; border: 1.5px solid var(--ink); border-radius: 5px; padding: 0.45rem 0.6rem; background: #fff; }
+  .apt .room.main { background: var(--accent-soft); }
+  .apt .room b { display: block; }
+  .apt .room .note { font-size: 0.75rem; color: var(--ink-soft); line-height: 1.4; }
+  .apt .disk { border: 1.5px dashed var(--ink-soft); border-radius: 5px; padding: 0.4rem 0.6rem; margin-top: 0.5rem; font-size: 0.8rem; color: var(--ink-soft); }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 01 / 基础件 · 从零开始</div>
+  <h1>Pod 与容器 — agent 住的房间</h1>
+  <div class="meta">≈ 15 分钟 · 前置：无 · 产出：说清 镜像→容器→pod→节点 四层关系，以及 NAP 的 agent pod 里住着谁</div>
+</header>
+
+<p>NAP 的一切，最后都是"某个 pod 里的某个进程在干活"。你之前把 k3s 理解为"部署公寓"——方向是对的，这组课就把这个公寓一层层拆开。今天只拆一间：<b>agent 住的房间（pod）</b>。</p>
+
+<h2>图纸与房子：镜像和容器</h2>
+<p>先分清两个词，后面所有内容都压在它俩身上：</p>
+<ul>
+  <li><b>镜像（image）= 图纸</b>。一份只读的打包模板：代码 + 运行时 + 依赖，分层冻结而成。它自己不运行，放多久都不会变。</li>
+  <li><b>容器（container）= 按图纸建的房子</b>。镜像的一次<b>运行实例</b>：一个被 Linux 内核隔离起来的普通进程——看得见独立的文件系统（来自镜像），有自己的资源限额（CPU/内存），互相看不见对方的进程。</li>
+</ul>
+<p>关键认知：容器<b>不是虚拟机</b>。没有模拟硬件、没有装第二个操作系统，它就是一个进程，只是被内核用 namespace（隔离视野）和 cgroup（限额）圈了起来。所以它启动是秒级的——和启动一个普通进程差不多。</p>
+
+<div class="sidenote">对照 butterfly：你们的曦曦引擎是一个 Bun 进程跑在 PM2 里。"容器化"做的事，就是把这个进程连同它依赖的 Bun、node_modules 一起按图纸打包，让它在任何机器上都能原样跑起来——不用那台机器装过任何东西。</div>
+
+<h2>Pod：K8s 的最小调度单位</h2>
+<p>K8s 不直接调度容器，它调度的单位是 <b>pod</b>：一个或多个容器的<b>组合</b>，满足——</p>
+<ul>
+  <li>同 pod 的容器<b>共享网络</b>：彼此用 <code>localhost</code> 互通，对外一个 IP；</li>
+  <li>同 pod 的容器<b>共享存储卷</b>：大家挂同一块盘，看到同一份文件；</li>
+  <li>同生共死、一起调度：k8s 不会把一个 pod 拆到两台机器上。</li>
+</ul>
+<p>为什么要有这一层？因为有些进程<b>天然需要住在一起</b>——比如主程序 + 一个给它做辅助的伴随进程。这种伴随容器的英文名是 <b>sidecar</b>。名字来历：摩托车边斗——绑在主车旁边、主车到哪它到哪、有自己的座位但不是司机。同 pod 的辅助容器正是这个角色：跟随主容器同调度同生死，只做辅助。</p>
+
+<h2>打开 NAP 的真实房间</h2>
+<p>NAP 每个用户 workspace 就是一个 pod。它的形状定义在一个文件里（<span class="cite">internal/k8s-provider/workspace-spec.ts</span>），简化后长这样：</p>
+
+<pre class="yaml"><span class="c"># 一个 workspace pod（公寓里的一间房）</span>
+<span class="k">containers:</span>
+  - <span class="k">name:</span> agent          <span class="c"># ← 主人：Claude Code / Codex / Goose 之一的适配器</span>
+  - <span class="k">name:</span> afs           <span class="c"># ← sidecar：把跨 agent 共享盘挂成 /mnt/afs</span>
+  - <span class="k">name:</span> memory-fuse   <span class="c"># ← sidecar：把记忆库（存在数据库里）挂成 /mnt/memory</span>
+<span class="k">volumes:</span>
+  - <span class="k">name:</span> workspace     <span class="c"># ← 挂到 /workspace 的持久磁盘（第 5 课细讲）</span></pre>
+
+<div class="sidenote"><b>先解几个名字。</b> <b>/mnt</b>：Linux 惯例的“挂载点”目录——挂载（mount）= 把另一块存储（磁盘/网络文件系统/数据库）接到目录树上。<b>/workspace</b>：NAP 约定的 agent 主工作目录，持久盘挂在这。<b>FUSE</b>：把“别处的东西”（网络存储、数据库）伪装成本地目录的技术——注意是<b>实时翻译，不是拷贝</b>：你读文件时它才去查真身，数据从不落地。<b>dufs</b>：一个开源的极简文件服务器（Rust 单二进制），跑在 agent 主容器里，把 /workspace 暴露成 HTTP——你的文件面板/下载就是它在递文件。</div>
+
+<div class="apt">
+  <div class="floor">
+    <div class="label">POD（一个 workspace）</div>
+    <div class="rooms">
+      <div class="room main"><b>agent 容器</b><span class="note">前沿引擎适配器 + dufs（把 /workspace 讲成 HTTP）<br>HOME 指向 /workspace/.home</span></div>
+      <div class="room"><b>afs sidecar</b><span class="note">把跨 agent 共享盘<br>伪装成本地目录 /mnt/afs</span></div>
+      <div class="room"><b>memory sidecar</b><span class="note">把数据库里的记忆库<br>伪装成 /mnt/memory</span></div>
+    </div>
+    <div class="disk">💾 workspace 卷 → 挂在 /workspace（文件的真身所在，比 pod 活得久）</div>
+  </div>
+</div>
+
+<p>注意两个设计动作：① agent 的 <b>HOME 被指到 /workspace/.home</b>——transcripts、skills 全落在卷上而不是容器文件系统里，pod 死了它们不死；② 两个 sidecar 各自把“远处的数据”（共享盘、数据库里的记忆）用 FUSE 翻译成本地目录（<code>/mnt/afs</code>、<code>/mnt/memory</code>），dufs 再把 <code>/workspace</code> 翻译成 HTTP。方向不同：<b>dufs 是出口</b>（外面的人看 agent 的文件），<b>两个 sidecar 是入口</b>（agent 用本地姿势用远处的东西）。都没有拷贝数据，都是实时翻译——agent 容器活得像个普通 Linux 用户，对分布式一无所知。<b>三个容器，一个视野</b>，这就是 pod 这个抽象的用处。</p>
+<div class="sidenote">sidecar 把远处的数据“翻译”成本地目录、dufs 把目录翻译成 HTTP——agent 容器对分布式一无所知，这是个重要的设计哲学，第 7 课会看到它的全部回报。</div>
+
+<h2>楼层：节点</h2>
+<p>pod 最终要落在某台真实机器上跑，这台机器叫<b>节点（node）</b>。一栋公寓（集群）= 许多节点 + 一个物业（k8s 控制面，下一课的主角）。至于 <b>k3s</b>：它是 K8s 的轻量发行版——把整个"物业系统"压缩成单个二进制，一台 Linux 机器就能开张。NAP 的 quick start 一条命令装的就是它。物业怎么运作，是下一课的事。</p>
+
+<h2>检索练习</h2>
+<p>合上上文，凭记忆答：</p>
+
+<div class="quiz" data-answer="3">
+  <div class="q">1. NAP 里 agent 跑的最小 K8s 单位是？</div>
+  <ol class="opts">
+    <li>一个容器</li>
+    <li>一个镜像</li>
+    <li>一个 Pod</li>
+    <li>一台节点</li>
+  </ol>
+  <div class="feedback" data-yes="对。K8s 调度的最小单位是 pod（容器的组合），不是单个容器。" data-no="镜像不运行、容器不是 K8s 的调度单位、节点是机器——再想想"K8s 搬运的最小箱子"是什么。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">2. 一个 pod 里可以住几个容器？</div>
+  <ol class="opts">
+    <li>只能住一个</li>
+    <li>一个或多个</li>
+    <li>至少要两个</li>
+    <li>看内存大小</li>
+  </ol>
+  <div class="feedback" data-yes="对。单容器是常见形态；NAP 的 workspace pod 是“1 主 + 2 sidecar”三容器。" data-no="单容器 pod 完全合法且最常见——它是“一个或多个”。"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">3. 镜像（image）和容器（container）的关系，最贴切的比方是？</div>
+  <ol class="opts">
+    <li>图纸和房子</li>
+    <li>房东与租客</li>
+    <li>货车和货物</li>
+    <li>老师和课程</li>
+  </ol>
+  <div class="feedback" data-yes="对。镜像是冻结的只读模板，容器是按它跑起来的隔离进程——同一张图纸可以建出很多房子。" data-no="提示：一个是死的模板，一个是活的运行实例。"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">4. 同一个 pod 里的两个容器互相访问，用？</div>
+  <ol class="opts">
+    <li>走公网地址</li>
+    <li>靠消息队列</li>
+    <li>用 localhost</li>
+    <li>写共享文件</li>
+  </ol>
+  <div class="feedback" data-yes="对。同 pod 共享网络命名空间，localhost 即互通——agent 容器就是这样找到同 pod 里 dufs（文件服务器）的。" data-no="同 pod 容器共享网络栈，访问对方就像访问自己机器上的另一个端口。"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">5. NAP 把 agent 容器的 HOME 指到 /workspace/.home，是为了？</div>
+  <ol class="opts">
+    <li>让转录落卷上</li>
+    <li>少占点内存</li>
+    <li>加快点启动</li>
+    <li>方便看日志</li>
+  </ol>
+  <div class="feedback" data-yes="对。/workspace 在持久卷上——pod 死了、换了 core，transcripts 和 skills 都还在。" data-no="想"什么数据需要在 pod 死后存活"：卷上的东西活，容器文件系统里的东西死。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">6. agent 执行 <code>cat /mnt/memory/某记忆.md</code> 时，内容从哪里来？</div>
+  <ol class="opts">
+    <li>启动时下载的</li>
+    <li>数据库里现查的</li>
+    <li>PVC 上缓存的</li>
+    <li>沙箱里生成的</li>
+  </ol>
+  <div class="feedback" data-yes="对。FUSE 是实时翻译层：文件操作被翻译成数据库查询，按需返回，数据从不落地拷贝。" data-no="回忆“翻译”比方：你说文件，它说 SQL——是现场翻译，不是事先拷好的副本。"></div>
+</div>
+
+<div class="next">
+  <p><b>首要阅读</b>：K8s 官方中文文档 <a href="https://kubernetes.io/zh-cn/docs/concepts/workloads/pods/">「Pod」概念页</a>——只读前半（什么是 Pod），跳过里面所有还没学过的词（Deployment 等，后面课会到）。</p>
+  <p><b>动手（可选，5 分钟）</b>：打开 <span class="cite">internal/k8s-provider/workspace-spec.ts</span>，只找三样东西：agent 容器的定义、两个 sidecar 容器的名字、<code>/workspace</code> 的挂载点。找到就达到本课目标了，别的行不用看懂。</p>
+  <p><b>下一课预告</b>：k3s 与期望状态循环——pod 会死、会搬家，谁保证"声明要 3 个就真的有 3 个"？物业的记账本哲学。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：任何一步含糊——“namespace/cgroup 到底隔离了什么”、“sidecar 为什么不做成主容器里的一个线程”——直接问我，别带着模糊进下一课。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 01（基础件系列 1/6）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="https://kubernetes.io/zh-cn/docs/concepts/workloads/pods/">K8s 官方：Pod</a>
+</footer>
+</main>
+</body>
+</html>

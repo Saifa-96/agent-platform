@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03 · Deployment 与 StatefulSet — pod 的两种管理员</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .cmp { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1.5rem 0; font-family: var(--sans); font-size: 0.85rem; }
+  .cmp .col { flex: 1 1 15rem; border: 1.5px solid var(--ink); border-radius: 8px; overflow: hidden; }
+  .cmp .col h3 { margin: 0; padding: 0.5rem 0.8rem; background: var(--accent-soft); font-size: 0.95rem; border-bottom: 1.5px solid var(--ink); }
+  .cmp .col ul { margin: 0; padding: 0.6rem 0.9rem 0.8rem 1.6rem; line-height: 1.7; }
+  .pods { display: flex; gap: 0.4rem; padding: 0.4rem 0.8rem 0.8rem; flex-wrap: wrap; }
+  .pods span { font-family: var(--mono); font-size: 0.7rem; border: 1px solid var(--line); border-radius: 4px; padding: 0.15rem 0.4rem; background: #fff; }
+  /* 协作流程图 */
+  .chain { font-family: var(--sans); font-size: 0.84rem; margin: 1.5rem 0; }
+  .chain .actor, .chain .ledger, .chain .result { border: 1.5px solid var(--ink); border-radius: 7px; padding: 0.55rem 0.9rem; margin: 0 auto; max-width: 30rem; background: #fff; }
+  .chain .ledger { background: var(--code-bg); }
+  .chain .conn { text-align: center; color: var(--ink-soft); font-size: 0.72rem; padding: 0.25rem 0; }
+  .chain .result { background: var(--ok-bg); text-align: center; }
+  .chain .lane { border: 1.5px dashed var(--ink-soft); border-radius: 8px; padding: 0.6rem 0.8rem; max-width: 34rem; margin: 0 auto; position: relative; }
+  .chain .lane-tag { position: absolute; top: -0.6rem; left: 0.8rem; background: var(--paper); padding: 0 0.4rem; font-size: 0.72rem; color: var(--ink-soft); letter-spacing: 0.08em; }
+  .chain .step { border: 1.5px solid var(--ink); border-radius: 6px; padding: 0.5rem 0.8rem; margin: 0.55rem 0; background: #fff; line-height: 1.6; }
+  .chain .step .sub { color: var(--ink-soft); font-size: 0.75rem; }
+  .chain .heal { border-top: 2px solid var(--line); margin-top: 0.8rem; padding: 0.6rem 0.2rem 0; font-size: 0.8rem; color: var(--ink-soft); max-width: 34rem; margin-left: auto; margin-right: auto; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 03 / 基础件 3/6</div>
+  <h1>Deployment 与 StatefulSet — pod 的两种管理员</h1>
+  <div class="meta">≈ 15 分钟 · 前置：Lesson 02（期望状态）· 产出：判断任何服务该用哪种，并说清 NAP 为什么两种都用</div>
+</header>
+
+<p>上一课结尾说：你写下期望状态"应该有 3 个 pod"，剩下交给收敛。这课回答：具体<b>是谁</b>在读这句话、按什么规则管 pod？K8s 里管 pod 的东西叫<b>工作负载控制器</b>（workload controller），你只需要认识两种——恰好 NAP 每种都用了一个。</p>
+
+<div class="sidenote"><b>注意：workload controller 不是 kubelet。</b>它们是两层不同的循环：controller 住在 control plane，只负责"数副本数量，缺了就在账本里登记新 pod 对象"——纯记账，不碰容器；kubelet 住在每台机器上，读到"这个 pod 归我管"才真正拉镜像、启动容器。中间还有 scheduler 给 pod 挑机器。链条上没人直接调用谁，全靠改账本协作（上一课哲学的内部贯彻）。controller = 总部数人头的调度员，kubelet = 楼层管家。</div>
+
+<h3>从"写下期望"到"容器跑起来"：完整流程图</h3>
+<div class="chain">
+  <div class="actor you"><b>你</b>：写下 Deployment ——「期望：3 个副本」</div>
+  <div class="conn">▼ 写入（唯一入口 API server）</div>
+  <div class="ledger">📒 <b>账本（etcd）</b> —— 所有人的唯一中转站，没人打电话，只读写这里</div>
+  <div class="lane cp"><span class="lane-tag">control plane（总部）</span>
+    <div class="step"><b>① Deployment controller</b>（数人头）<br>读账本：期望 3，现只有 2 个 pod 对象，差 1<br>→ 通过 API server 在账本里登记 1 个新 pod 对象<br><span class="sub">纯记账，没碰任何容器</span></div>
+    <div class="step"><b>② scheduler</b>（派单员）<br>读账本：发现 1 个新 pod 没定机器<br>→ 挑机器：「pod-x → 节点 2」写进账本</div>
+  </div>
+  <div class="conn">▼ 账本变化，被对应节点的 kubelet 监听到（不是被通知，是自己一直在看）</div>
+  <div class="lane node"><span class="lane-tag">节点（楼层）</span>
+    <div class="step"><b>③ kubelet</b>（楼层管家）<br>读账本：「pod-x 归我管」<br>→ 拉镜像、创建容器、上报状态<br><span class="sub">全链条唯一动手的环节</span></div>
+  </div>
+  <div class="conn">▼ 容器就位，状态回写账本</div>
+  <div class="result">✓ 3 个运行中的 pod —— 现实 = 期望</div>
+  <div class="heal">↺ <b>自愈也是同一条链</b>：pod 崩了 → 所在机器的 kubelet 重启它；整个机器挂了 → controller 发现账本里少了，重新走①②③在别的机器补上。没有"报警-修复"系统，只有永不停歇的循环。</div>
+</div>
+
+<h3>「写下 Deployment」的具体形态：YAML 清单</h3>
+<p>"workload controller"一词指两层：<b>控制器软件</b>（K8s 自带的通用进程，所有 Deployment 共用一个，你不用写）和<b>你的声明</b>（一个 YAML 清单文件，你真正"写下"的东西）：</p>
+<pre class="yaml"><span class="k">apiVersion:</span> apps/v1
+<span class="k">kind:</span> Deployment        <span class="c"># 声明的种类："我要一个 Deployment"</span>
+<span class="k">metadata:</span>
+  <span class="k">name:</span> my-agent
+<span class="k">spec:</span>                   <span class="c"># 期望状态：你真正"写"的内容</span>
+  <span class="k">replicas:</span> 3           <span class="c"># ← 流程图里的"期望 3 副本"</span>
+  <span class="k">selector:</span>
+    <span class="k">matchLabels:</span> { <span class="k">app:</span> my-agent }  <span class="c"># 认领规则：带此标签的 pod 归我数</span>
+  <span class="k">template:</span>             <span class="c"># pod 的模子（第 1 课的图纸）</span>
+    <span class="k">spec:</span>
+      <span class="k">containers:</span>
+        - <span class="k">name:</span> agent
+          <span class="k">image:</span> my-agent:1.0</pre>
+<p>提交：<code>kubectl apply -f deployment.yaml</code> → API server → etcd → 上面的链条开动。<b>YAML 只是给人写的序列化格式</b>（线上跑 JSON），程序可以跳过它直接构造对象——NAP 就是这样：<span class="cite">internal/k8s-provider/static-workload.ts</span> 里 <code>createNamespacedDeployment(...)</code> 用 TypeScript 构造对象直接提交，NAP 没人手写 YAML，写 YAML 的角色被 env-runner 的代码取代。</p>
+
+<h2>分水岭：副本可不可以互换</h2>
+<p>选哪种管理员，只看一个问题：<b>你的多个副本（replica）是不是彼此等价的"无名氏"？</b></p>
+
+<div class="cmp">
+  <div class="col">
+    <h3>Deployment</h3>
+    <div class="pods"><span>app-7f9c8b-x2vkl</span><span>app-7f9c8b-p9qz4</span><span>app-7f9c8b-k3m8w</span></div>
+    <ul>
+      <li>副本<b>无名、等价、可互换</b>：名字带随机尾巴，谁死都一样，补一个就行</li>
+      <li>内置<b>滚动升级</b>：新的起、旧的下，服务不中断；可回滚</li>
+      <li>适合<b>无状态</b>（stateless）服务——典型的 Web API</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h3>StatefulSet</h3>
+    <div class="pods"><span>db-0</span><span>db-1</span><span>db-2</span></div>
+    <ul>
+      <li>副本<b>有身份</b>：稳定序号 0、1、2，死而复生还是原来的编号</li>
+      <li><b>有序</b>启停：按编号顺序起、按编号倒序停</li>
+      <li>通常每个副本<b>挂自己的盘</b>——数据跟着身份走</li>
+      <li>适合<b>有状态</b>（stateful）服务——典型的数据库</li>
+    </ul>
+  </div>
+</div>
+
+<div class="sidenote">名字来历：Deployment = "一次部署"的名词化——你声明一次部署应有的样子。StatefulSet = stateful（有状态的）+ set（一组）——"一组有身份的东西"。判断口诀：**副本死了，随便补一个没人发现 → Deployment；副本死了，必须"还是它" → StatefulSet。**</div>
+
+<p>为什么数据库需要身份？想象 PostgreSQL 主从：db-1 是从库、攒着自己的复制位点——它死了补一个<b>全新</b> pod 进来没用，必须还是"db-1"、接上原来那份数据。身份+盘跟着走，这就是 StatefulSet 存在的理由。</p>
+
+<h2>NAP 的两种用法（真实代码）</h2>
+<p>NAP 恰好一边一个，而且用法都不是最典型的——值得细看：</p>
+
+<table class="map">
+  <tr><th></th><th>static workspace</th><th>auto-scaling workspace</th></tr>
+  <tr><td>管理员</td><td>Deployment（单副本）</td><td>StatefulSet（1..N 副本）</td></tr>
+  <tr><td>卷</td><td>一个 RWO PVC</td><td>一块 <b>RWX</b> PVC，<b>所有副本共享</b></td></tr>
+  <tr><td>为什么</td><td>常驻单实例，最简单形状</td><td>要<b>稳定身份</b>做会话亲和，不要独立盘</td></tr>
+  <tr><td>代码</td><td><span class="cite">internal/k8s-provider/static-workload.ts</span></td><td><span class="cite">internal/k8s-provider/auto-scaling-workload.ts</span></td></tr>
+</table>
+
+<p>两个提前一分钟的词：<b>RWO</b>（ReadWriteOnce）= 卷同一时刻只能被<b>一台机器（K8s 节点）</b>挂载——注意限制单位是机器不是 pod：同机器上的多个 pod 可以共享，跨机器不行（挂载是机器内核执行的动作，pod 只是住在机器上用现成的）；<b>RWX</b>（ReadWriteMany）= 多台机器同时挂同一块卷（NFS 支持，因为数据真身在 NFS 服务器、各机器只挂网络客户端视图；块设备做不了——两个内核同写一个文件系统会损坏）。细节第 5 课展开。</p>
+
+<div class="sidenote">注意 NAP 用 StatefulSet 的姿势：<b>要了身份，没要独立盘</b>。经典用法是"每副本一块自己的盘"（数据库），NAP 反着来——所有副本挂同一块共享卷。它图的只是稳定序号带来的<b>稳定网络地址</b>（第 4 课的主角）：一个会话被路由到副本 2，断了重连还能找到"还是副本 2"。这是对 StatefulSet 的创造性挪用，记住这个例子，比记住教科书定义有用。</div>
+
+<h2>检索练习</h2>
+
+<div class="quiz" data-answer="1">
+  <div class="q">1. Deployment 管理的多个副本之间，关系是？</div>
+  <ol class="opts">
+    <li>完全等价可换</li>
+    <li>各有自己编号</li>
+    <li>严格的主从</li>
+    <li>大小各不相同</li>
+  </ol>
+  <div class="feedback" data-yes="对。无名氏互替——谁死补谁都一样，这正是滚动升级能工作的前提。" data-no="回忆左栏：随机尾巴的名字、死了随手补——它们之间是什么关系？"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">2. StatefulSet 的副本命名形式是？</div>
+  <ol class="opts">
+    <li>随机字符串尾</li>
+    <li>带稳定序号</li>
+    <li>按用户来命名</li>
+    <li>由 IP 所决定</li>
+  </ol>
+  <div class="feedback" data-yes="对。db-0、db-1、db-2——死而复生还是原编号，身份不变。" data-no="右栏那排小方块的名字长什么样？"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">3. PostgreSQL 主从集群（每个实例绑自己的数据）该交给谁管？</div>
+  <ol class="opts">
+    <li>Deployment</li>
+    <li>CronJob</li>
+    <li>裸 Pod</li>
+    <li>StatefulSet</li>
+  </ol>
+  <div class="feedback" data-yes="对。教科书案例：身份 + 自己的盘，数据跟着身份走。" data-no="从库死了必须"还是它"并接上原数据——哪个管理员保证身份？"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">4. NAP 的 static workspace（常驻单实例）由谁保证存活？</div>
+  <ol class="opts">
+    <li>StatefulSet</li>
+    <li>裸 Pod 直建</li>
+    <li>Deployment</li>
+    <li>PM2 守护</li>
+  </ol>
+  <div class="feedback" data-yes="对。单副本 Deployment——无状态形状的最简版本，static-workload.ts 里的 kind: Deployment。" data-no="常驻单实例、无需身份——最简单的那种管理员。"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">5. NAP 的 auto-scaling workspace 用 StatefulSet，主要图它什么？</div>
+  <ol class="opts">
+    <li>更高的资源配额</li>
+    <li>自动免费备份</li>
+    <li>每副本独立盘</li>
+    <li>稳定的副本身份</li>
+  </ol>
+  <div class="feedback" data-yes="对。稳定序号 → 稳定网络地址 → 会话亲和。注意它没要独立盘：所有副本共享一块 RWX 卷。" data-no="回忆"创造性挪用"那段：要了身份，没要独立盘——为了什么？"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">6. auto-scaling 的多个副本共享同一块 RWX 卷，说明这些副本？</div>
+  <ol class="opts">
+    <li>数据各管各的</li>
+    <li>看同一份文件</li>
+    <li>互相不能通信</li>
+    <li>永远只有一个跑</li>
+  </ol>
+  <div class="feedback" data-yes="对。任何副本被路由到，看到的都是同一份 /workspace——这是"文件只有一份"的物理基础。" data-no="RWX = 多节点同时挂同一块卷。挂同一块卷的副本，看到的是……"></div>
+</div>
+
+<div class="next">
+  <p><b>首要阅读</b>：<a href="https://kubernetes.io/zh-cn/docs/concepts/workloads/controllers/statefulset/">K8s 官方中文「StatefulSet」</a>——重点读开头的"StatefulSet 与 Deployment 的差异"，官方对比表。</p>
+  <p><b>动手（可选，5 分钟）</b>：分别打开 <span class="cite">internal/k8s-provider/static-workload.ts</span> 和 <span class="cite">internal/k8s-provider/auto-scaling-workload.ts</span>，各搜一个词 <code>kind:</code>——亲眼确认一个 Deployment、一个 StatefulSet。</p>
+  <p><b>下一课预告</b>：Service 与 DNS——pod 总在死而复生、换 IP，外面的世界怎么找到它？以及 NAP 为什么故意不给 auto-scaling 用 VIP。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：卡住就问——"滚动升级具体怎么做到不中断"、"RWX 的卷怎么实现的"，都值得展开。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 03（基础件系列 3/6）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="0002-k3s-and-desired-state.html">上一课：k3s 与期望状态</a> ·
+  <a href="https://kubernetes.io/zh-cn/docs/concepts/workloads/controllers/statefulset/">K8s 官方：StatefulSet</a>
+</footer>
+</main>
+</body>
+</html>
