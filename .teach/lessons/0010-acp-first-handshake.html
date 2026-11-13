@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>10 · ACP 第一次握手 — 内存直连实验</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .lab { border: 1.5px solid var(--ink); border-radius: 8px; padding: 0.8rem 1rem; margin: 1.2rem 0; background: #fff; }
+  .lab .step-tag { font-family: var(--sans); font-size: 0.78rem; font-weight: 700; color: var(--accent); letter-spacing: 0.06em; }
+  pre.code { font-family: var(--mono); font-size: 0.78rem; line-height: 1.6; background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 0.9rem 1.1rem; overflow-x: auto; margin: 1rem 0; }
+  pre.code .c { color: var(--ink-soft); font-style: italic; }
+  pre.code .todo { color: var(--accent); font-weight: 700; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 10 / ACP 模块 2/6 · 动手课</div>
+  <h1>第一次握手 — 内存直连实验</h1>
+  <div class="meta">约 30 分钟 · 前置：第 9 课 · 产出：一个能跑的 echo agent + 测试客户端，在内存里走完 initialize → new → prompt → update → stopReason 全程</div>
+</header>
+
+<p>第 9 课你在纸上看时序图；这一课让它活起来。方案是 SDK 的<b>内存直连</b>——client app 和 agent app 在同一进程里握手，不需要 WebSocket、不需要子进程、不需要任何基础设施。这是官方钦定的测试姿势（README 原话："useful for tests and in-process examples"），也是你将来给 adapter 写单测的形态。</p>
+
+<h2>先认识三个 API 角色（都验证自你装的 SDK）</h2>
+
+<div class="lab">
+  <div class="step-tag">① agent() —— 构建你的 Agent 侧 app</div>
+  <p style="font-size:0.92rem">README 官方起手式：<code>agent({ name })</code> 拿到构建器，<code>.onRequest(方法, handler)</code> 逐个注册你要响应的方法。**你是 Agent 侧** = 你响应 initialize / session/new / session/prompt，主动发 session/update。</p>
+</div>
+
+<div class="lab">
+  <div class="step-tag">② handler 的 ctx —— id 概念的代码化</div>
+  <p style="font-size:0.92rem">每个 handler 收到一个 ctx，身上有三样东西，正好对应你学过的三种消息：</p>
+  <ul style="font-size:0.92rem">
+    <li><code>ctx.params</code> —— 来件（对方 request 的参数）</li>
+    <li><b>返回值</b> —— 回信：**你返回什么，SDK 自动把它变成同 id 的 response**。注意你从头到尾没写过 id——票根的贴和抄全被 SDK 包办了</li>
+    <li><code>await ctx.notify(methods.client.sessionUpdate, {...})</code> —— 发通知（无 id，发完就完）。处理 prompt 期间想推流式更新，就用它</li>
+  </ul>
+</div>
+
+<div class="lab">
+  <div class="step-tag">③ clientApp.connect(agentApp) —— 内存直连</div>
+  <p style="font-size:0.92rem">返回 ClientConnection，它的 <code>.agent</code> 就是"以客户端身份调对方"的把手：<code>conn.agent.request(methods.agent.initialize, 参数)</code>。测试客户端用它按剧本走流程。</p>
+</div>
+
+<h2>实验骨架（在 agent-hub 里建文件）</h2>
+<p>在 <span class="cite">agent-hub/internal/acp-adapter/examples/first-handshake.ts</span> 创建文件（examples/ 是库的标准惯例；这个文件属于你的项目，不是课程内容）。骨架如下，四个 TODO 是你的：</p>
+
+<pre class="code">import { agent, client, methods } from "@agentclientprotocol/sdk"
+
+// ── Agent 侧：echo agent ──────────────────────────────
+const echoAgent = agent({ name: "echo-agent" })
+    .onRequest(methods.agent.initialize, (ctx) =&gt; ({
+        protocolVersion: 1,
+        agentCapabilities: {},
+        authMethods: [],
+        // <span class="todo">TODO A：先原样返回这个最小响应，跑通后再加一项能力试试</span>
+    }))
+    .onRequest(methods.agent.sessionNew, (ctx) =&gt; ({
+        sessionId: "s-1",
+        // <span class="todo">TODO B：返回一个 sessionId（先写死，体会"会话由你创建"</span>
+        // <span class="todo">后续换成 crypto.randomUUID()）</span>
+    }))
+    .onRequest(methods.agent.sessionPrompt, async (ctx) =&gt; {
+        // <span class="todo">TODO C：发 2~3 条 agent_message_chunk 通知，再返回结束</span>
+        // 形状：await ctx.notify(methods.client.sessionUpdate, {
+        //   sessionId: ctx.params.sessionId,
+        //   update: { sessionUpdate: "agent_message_chunk",
+        //             content: { type: "text", text: "..." } },
+        // })
+        // 返回：{ stopReason: "end_turn" }
+        // <span class="todo">进阶：把 ctx.params.prompt 里的用户文字原样分段 echo 回去</span>
+    })
+
+// ── Client 侧：测试客户端（收通知）──────────────────────
+const testClient = client({ name: "test-client" })
+    .onNotification(methods.client.sessionUpdate, (ctx) =&gt; {
+        // <span class="todo">TODO D：打印收到的每条 update</span>
+        // 从 ctx.params.update 里取出 sessionUpdate 类型和内容
+    })
+
+// ── 内存直连 + 按剧本走流程 ────────────────────────────
+const conn = testClient.connect(echoAgent)
+
+const init = await conn.agent.request(methods.agent.initialize, {
+    protocolVersion: 1,
+    clientCapabilities: {},
+})
+console.log("握手完成:", JSON.stringify(init))
+
+const { sessionId } = await conn.agent.request(methods.agent.session.new, {
+    cwd: "/tmp",
+    mcpServers: [],
+})
+console.log("会话建立:", sessionId)
+
+const result = await conn.agent.request(methods.agent.session.prompt, {
+    sessionId,
+    prompt: [{ type: "text", text: "你好，ACP" }],
+})
+console.log("回合结束:", JSON.stringify(result))
+conn.close()</pre>
+
+<p>运行（Node 24 原生支持直接跑 .ts，不需要任何装载器）：</p>
+<pre class="code">cd agent-hub/internal/acp-adapter
+node examples/first-handshake.ts
+# 若报模块解析错，把 "type": "module" 检查一下（包里已有），或加 .mts 后缀</pre>
+
+<h2>验收清单（四条全过）</h2>
+<div class="lab">
+  <ol style="font-size:0.92rem">
+    <li>终端按顺序输出：握手完成的 agent 能力 → 会话 id → <b>若干条 [update]（你的通知逐条到达）</b> → 回合结束 stopReason: end_turn</li>
+    <li>update 的打印顺序和你 notify 的顺序一致——顺序即意义</li>
+    <li>能口头回答：response 是谁造的？（你没写 id，SDK 把返回值配了对）</li>
+    <li>进阶完成的话：echo 的内容来自用户 prompt，不是写死的</li>
+  </ol>
+</div>
+
+<h2>检索练习</h2>
+
+<div class="quiz" data-answer="2">
+  <div class="q">1. handler 的返回值最终变成了什么？</div>
+  <ol class="opts">
+    <li>一条通知推送</li>
+    <li>同 id 的 response</li>
+    <li>下一条的参数</li>
+    <li>连接关闭信号</li>
+  </ol>
+  <div class="feedback" data-yes="正确。SDK 拿走你的返回值，抄上来件的 id，造出 response 发回——id 的贴与抄你从未手写。" data-no="回忆 ctx 三件套：params 是来件、notify 发通知、返回值呢？"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">2. prompt handler 里推流式更新用 ctx 的什么？</div>
+  <ol class="opts">
+    <li>ctx.notify</li>
+    <li>ctx.request</li>
+    <li>ctx.respond</li>
+    <li>ctx.stream</li>
+  </ol>
+  <div class="feedback" data-yes="正确。notify 发无 id 通知——播报完不等回音，打字机效果的本体。" data-no="哪一个是"发完不等回答"？"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">3. 内存直连和将来 Zed 的 ws 直连，差在哪一层？</div>
+  <ol class="opts">
+    <li>方法集合不同</li>
+    <li>信封格式不同</li>
+    <li>会话模型不同</li>
+    <li>只差传输层</li>
+  </ol>
+  <div class="feedback" data-yes="正确。同一套 app、同一套 handler、同一套方法——connect 的目标从 agentApp 换成 ws 流，其余代码零改动。传输可插拔的意义。" data-no="回忆第 9 课：换传输不改语义，改的是哪层？"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">4. initialize 的响应里必须让客户端知道的核心信息是？</div>
+  <ol class="opts">
+    <li>服务器的价格</li>
+    <li>可用的模型表</li>
+    <li>协议版本与能力</li>
+    <li>用户的余额</li>
+  </ol>
+  <div class="feedback" data-yes="正确。protocolVersion + agentCapabilities + authMethods——客户端据此决定接下来怎么说话。" data-no="握手是谈判：客户端必须拿到什么才能继续？"></div>
+</div>
+
+<div class="next">
+  <p><b>首要参考</b>：<a href="https://github.com/agentclientprotocol/typescript-sdk/tree/main/src/examples">SDK 官方 examples 目录</a>（GitHub）——官方的 agent/client 成对示例，你的实验跑通后对照它的写法。</p>
+  <p><b>下一课预告</b>：第 11 课，session/update 事件全词表——agent_message_chunk 只是冰山一角，tool_call 的 started/in_progress/completed 状态机、plan、reasoning……逐个过，并对照你的 UniversalEvent 词表。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：TODO 卡住（params 形状、类型报错）直接把报错贴过来。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 10（ACP 模块 2/6 · 动手课）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="0009-acp-overview.html">上一课：ACP 全景</a> ·
+  <a href="https://agentclientprotocol.com/protocol/v1/overview">ACP v1 文档</a>
+</footer>
+</main>
+</body>
+</html>

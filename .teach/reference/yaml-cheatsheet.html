@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YAML 语法速查（K8s 清单专用）</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .rule { border-left: 4px solid var(--accent); padding: 0.6rem 1rem; margin: 1.2rem 0; background: #fff; }
+  .rule b.tag { font-family: var(--sans); color: var(--accent); }
+  table.map td:first-child { white-space: nowrap; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Reference / 参考卡 02</div>
+  <h1>YAML 语法速查 —— K8s 清单专用</h1>
+  <div class="meta">只为读懂和书写 K8s 清单服务，不是完整 YAML 教程。配合 <a href="../lessons/0004-deployment-vs-statefulset.html">第 4 课</a>与 <a href="../exercises/0001-mini-env-runner/TASK.md">练习 0001</a> 使用。</div>
+</header>
+
+<h2>两种结构：映射和列表</h2>
+<pre class="yaml"><span class="c"># 映射（键值对）——对应 JSON 的对象 {}</span>
+<span class="k">name:</span> nginx-pod
+<span class="k">replicas:</span> 3
+
+<span class="c"># 列表（一串元素）——对应 JSON 的数组 []，每个 "-" 开启一个元素</span>
+<span class="k">containers:</span>
+  - <span class="k">name:</span> a        <span class="c"># 元素 1 开始</span>
+    <span class="k">image:</span> nginx   <span class="c">#   与 name 对齐 = 同一元素内</span>
+  - <span class="k">name:</span> b        <span class="c"># 元素 2 开始（新 "-"）</span>
+    <span class="k">image:</span> redis</pre>
+
+<div class="rule"><b class="tag">核心规则</b>　"-" 是<b>列表项的起始标记</b>，不属于它后面的键。元素内的后续键与第一个键<b>列对齐</b>即属于同一元素，不需要再写 "-"。</div>
+
+<h2>JSON 对照（最快的心智模型）</h2>
+<table class="map">
+  <tr><th>YAML</th><th>JSON 等价</th></tr>
+  <tr><td><code>- name: x</code></td><td><code>[ { "name": "x" } ]</code> —— "-" 就是数组里对象的花括号</td></tr>
+  <tr><td><code>key:</code>（无值，下面缩进）</td><td>嵌套对象或数组的开始</td></tr>
+  <tr><td><code>key: value</code></td><td><code>{ "key": "value" }</code></td></tr>
+</table>
+
+<h2>K8s 清单的固定骨架</h2>
+<pre class="yaml"><span class="k">apiVersion:</span> v1            <span class="c"># 哪个版本的 API（决定 kind 的合法集合）</span>
+<span class="k">kind:</span> Pod                 <span class="c"># 对象种类：Pod / Deployment / PVC / Service…</span>
+<span class="k">metadata:</span>                 <span class="c"># 这份档案自己的信息（名字、标签）</span>
+  <span class="k">name:</span> nginx-pod
+  <span class="k">labels:</span> { <span class="k">app:</span> web }     <span class="c"># 行内写法：小型映射可以写在一行</span>
+<span class="k">spec:</span>                      <span class="c"># 期望状态：每种 kind 有自己的 schema</span>
+  ...</pre>
+
+<h2>课程清单里反复出现的列表位</h2>
+<table class="map">
+  <tr><th>列表位</th><th>为什么是列表</th><th>见过的地方</th></tr>
+  <tr><td><code>spec.containers</code></td><td>pod 可住多容器（1 主 + N sidecar）</td><td>第 1 课 NAP 的三容器 pod</td></tr>
+  <tr><td><code>spec.volumes</code></td><td>pod 可声明多块盘</td><td>第 1 课盘位、第 6 课 PVC</td></tr>
+  <tr><td><code>containers[].volumeMounts</code></td><td>一个容器可挂多块盘</td><td>同上</td></tr>
+  <tr><td><code>spec.template</code></td><td>不是列表——是嵌套对象（pod 的模子）</td><td>第 4 课 Deployment</td></tr>
+</table>
+
+<h2>三条铁律（踩一次记一生）</h2>
+<div class="rule"><b class="tag">铁律 1</b>　缩进只有空格，<b>禁止 Tab</b>。</div>
+<div class="rule"><b class="tag">铁律 2</b>　对齐决定归属：<code>image</code> 与 <code>name</code> 同列才是一个元素；差一格就是另一个层级。</div>
+<div class="rule"><b class="tag">铁律 3</b>　冒号后必须有空格：<code>name: nginx</code> 对，<code>name:nginx</code> 错（会被当成一个字符串）。</div>
+
+<footer>
+  NAP 平台设计课程 · 参考卡 02（YAML）·
+  <a href="glossary.html">术语表</a> ·
+  <a href="../lessons/0004-deployment-vs-statefulset.html">第 4 课：Deployment 与 StatefulSet</a>
+</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>总集篇 · 基础件七课一册通</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  h2 { margin-top: 2.4rem; }
+  .grand { font-family: var(--mono); font-size: 0.78rem; line-height: 1.7; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.2rem; margin: 1.2rem 0; white-space: pre; overflow-x: auto; }
+  .law { border-left: 4px solid var(--accent); background: #fff; border-radius: 0 8px 8px 0; padding: 0.7rem 1rem; margin: 1rem 0; }
+  .law b.no { font-family: var(--mono); color: var(--accent); }
+  .pit { background: #fff; border: 1.5px solid var(--ink); border-radius: 8px; padding: 0.6rem 0.9rem; margin: 0.6rem 0; }
+  .pit b { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Compendium / 总集篇</div>
+  <h1>基础件七课一册通</h1>
+  <div class="meta">第 1–7 课的全景压缩 · 打印友好 · 复习时从这页开始，模糊了再回对应课</div>
+</header>
+
+<h2>一、空间总图：一切都是嵌套</h2>
+<div class="grand">你的 Mac（本地环境）
+├── kubectl / helm（客户端进程——无状态，一切信息来自 kubeconfig）
+└── Docker Desktop
+    └── 容器（k3d 集群的"节点"，假扮一台机器）
+        └── k3s 进程（单二进制 = 整个物业）
+            ├── 账本（API server 入口 + 存储）
+            ├── ① controller / ② scheduler（记账与派单）
+            └── ③ kubelet（每节点一个，唯一动手的）
+                └── containerd
+                    └── pod（最小调度单位：共享网络+卷的容器组）
+                        └── container（被隔离的进程，按镜像跑起来）</div>
+<p>层级口诀：<b>集群管节点，节点养 pod，pod 装 container；节点看 kubelet，pod 看共享，container 看隔离。</b>kubectl 在环境边界外，靠一次 HTTPS 请求（经 Docker 端口映射/门房容器 → 节点:6443）跟物业说话。</p>
+
+<h2>二、三条主哲学（贯穿七课）</h2>
+<div class="law"><b class="no">哲学一 · 声明式：</b>写下期望，等收敛。你写的永远是"应该是什么"，不是"怎么做"——Deployment 的副本数、PVC 的申请单、甚至 Docker 保 k3s 活着的重启策略，全是同一个动作。推论：<b>apply 是下单，不是收货</b>（created ≠ Running，拉镜像要真实时间）。</div>
+<div class="law"><b class="no">哲学二 · 账本与订阅：</b>系统内部没有电话，只有账本。①②③谁也不调用谁，全靠"改账本 → 推送给订阅者 → 各自反应"。这个模式你已遇见四次：etcd（集群账本）、kubeconfig（频道表）、helm 的 index.yaml（包目录）、以及 NAP 的 PostgreSQL（平台自己的账本）。</div>
+<div class="law"><b class="no">哲学三 · 生死边界：</b>数据的寿命由"真身在哪"决定。pod 文件系统随 pod 死；/workspace 在 PVC 上活过 pod；会话真身在 PG。集群是最大生死边界——边界内全灭，边界外（镜像缓存、本地文件、外置存储）各活各的。NAP 里唯一的死亡点：删 workspace。</div>
+
+<h2>三、七课一句话回顾</h2>
+<table class="map">
+  <tr><th>课</th><th>一句话</th><th>NAP 里的对应</th></tr>
+  <tr><td>01 Pod 与容器</td><td>镜像是图纸，容器是房子；pod 是共享网络与卷的容器组（1 主 + N sidecar）</td><td>workspace pod：agent + AFS sidecar + memory sidecar，HOME 指到 PVC</td></tr>
+  <tr><td>02 期望状态</td><td>命令式做事 vs 声明式许愿；reconcile 循环观察→对比→行动，自愈是必然结果</td><td>cp 只写期望进 PG，env-runner 收敛成 K8s 对象（三层套娃的声明式）</td></tr>
+  <tr><td>03 动手实验</td><td>create/scale/自愈/滚动升级/回滚/label 认领——全部亲手见过</td><td>NAP 用代码构造对象直提交，没人手写 YAML</td></tr>
+  <tr><td>04 两种管理员</td><td>副本可互换 → Deployment；要身份 → StatefulSet；名字是档案标题，标签是认领之章</td><td>static=单副本 Deployment；auto-scaling=StatefulSet 挪用（要身份不要独立盘）</td></tr>
+  <tr><td>05 Service 与 DNS</td><td>pod 换 IP，门牌不换；headless 无门牌给名册；VIP 轮询毁会话亲和</td><td>static 用 ClusterIP；auto-scaling 用 headless + per-ordinal DNS 点名投递</td></tr>
+  <tr><td>06 PVC</td><td>PVC 申请单 → StorageClass 供货规则 → PV 发货；T0–T4 一生；RWO 限机器，RWX 要 NFS</td><td>每 workspace 一块卷（&lt;id&gt;-workspace，10Gi 只增不减）；RWX 共享给多副本</td></tr>
+  <tr><td>07 MCP</td><td>工具插座协议：握手→发现→调用；宿主是中间人，模型只产文本</td><td>control-plane 是 MCP 服务器（八工具族），pod 内 mcp-forward 零凭证转发</td></tr>
+</table>
+
+<h2>四、一条消息的旅程（浓缩版）</h2>
+<div class="grand">用户消息 → 通道（web/API/定时/webhook）
+  ↓ control-plane 四关：会话租约 → 容量门 → 唤醒（ensureRunning，90s 冷启动）→ 选副本（亲和）
+  ↓ 用户消息先落 PostgreSQL（SSE 拦截器实时持久化——会话真身不在 pod）
+  ↓ HTTPS → pod 内 agent 适配器（ACP 包着的前沿 core）
+  ↓ 模型决策：① 直接写 /workspace（PVC）② 调 MCP 工具（mcp-forward → cp → 沙箱/浏览器/记忆…）
+  ↓ SSE 流回程，穿 cp 拦截器：消息/统计入库，广播给重连客户端
+  ↓ 交付：dufs（pod 内文件服务器）→ 文件面板/下载/分享 URL</div>
+<p>详版（含每格的生死边界与代码锚点）在第 8 课：<a href="../lessons/0008-message-lifecycle-map.html">一条消息的旅程</a>。</p>
+
+<h2>五、NAP 决策链速查（业务 → 技术的完整翻译）</h2>
+<div class="grand">业务：省钱（闲置零成本） vs 秒回（常驻热身）
+  ↓
+serving 模式：auto-scaling（缩到零）      vs  static（常驻单实例）
+  ↓
+副本分布：1..N、散布多机                vs  永远单实例
+  ↓                                        ↓
+盘：RWX 共享（NFS，多机同挂）           RWO 单机盘
+  ↓
+寻址：StatefulSet 稳定序号 + headless   ClusterIP Service 足矣
+      → 会话亲和：重连找回"还是那个副本"</div>
+
+<h2>六、你踩过的坑（易错清单，来自真实问答）</h2>
+<div class="pit"><b>挂载 ≠ 拷贝：</b>FUSE/NFS/PVC 都是实时视图，数据从不落地复制。memory sidecar 是"现场翻译成 SQL"，不是下载。</div>
+<div class="pit"><b>controller ≠ kubelet：</b>controller 在 control plane 记账（数数、登记 Pod 对象）；kubelet 在每节点动手（唯一拉镜像的）。一个集群一套 controller，一个节点一个 kubelet。</div>
+<div class="pit"><b>名字 ≠ 标签：</b>metadata.name 是档案标题（给别人找声明用）；template.labels 是盖在 pod 上的章（selector 认领用）。K8s 只校验"章能对上认领标准"。</div>
+<div class="pit"><b>created ≠ Running：</b>apply 只改账本；拉镜像、健康检查耗真实时间。等收敛用 rollout status / wait。</div>
+<div class="pit"><b>localhost:8080 化石：</b>看到它 = kubeconfig 里没有可用 context（集群被删了）。k3d 删集群会顺手删 context。</div>
+<div class="pit"><b>代理吃 0.0.0.0：</b>国内代理环境（Clash）+ k3d：kubectl 的请求被送进代理对 0.0.0.0 掐断（EOF）。修复：~/.zshrc 加 no_proxy。</div>
+<div class="pit"><b>流程图是角色图不是位置图：</b>①②③的分工永远不变；住址因发行版而异（k3s 把五个角色压进一个进程）。</div>
+<div class="pit"><b>环境边界：</b>kubectl/你在本地环境；control plane 在集群环境（节点容器内）。跨界的桥是一次 HTTPS 请求。</div>
+
+<h2>七、毕业自测（10 题，答不出回对应课）</h2>
+
+<div class="quiz" data-answer="3"><div class="q">1. pod 死而复生后 IP 会怎样？（第 5 课）</div>
+<ol class="opts"><li>保持永远不变</li><li>立即变成两个</li><li>由管理员指定</li><li>换成一个新</li></ol>
+<div class="feedback" data-yes="对。IP 是调度时从节点租的。所以需要 Service 这张稳定门牌。" data-no="IP 是租来的，重建即换。"></div></div>
+
+<div class="quiz" data-answer="1"><div class="q">2. 同一 pod 里的两个容器互相访问用？（第 1 课）</div>
+<ol class="opts"><li>用 localhost</li><li>走公网地址</li><li>靠消息队列</li><li>写共享文件</li></ol>
+<div class="feedback" data-yes="对。同 pod 共享网络命名空间。" data-no="同 pod = 同网络栈。"></div></div>
+
+<div class="quiz" data-answer="4"><div class="q">3. auto-scaling workspace 用 StatefulSet，主要图它什么？（第 4 课）</div>
+<ol class="opts"><li>更高的资源配额</li><li>自动免费备份</li><li>每副本独立盘</li><li>稳定的副本身份</li></ol>
+<div class="feedback" data-yes="对。稳定序号→稳定地址→会话亲和。没要独立盘：全副本共享一块 RWX。" data-no="创造性挪用：要了身份，没要盘。"></div></div>
+
+<div class="quiz" data-answer="3"><div class="q">4. 谁真正动手创建存储卷？（第 6 课）</div>
+<ol class="opts"><li>API server</li><li>scheduler</li><li>provisioner</li><li>kubelet</li></ol>
+<div class="feedback" data-yes="对。StorageClass 背后的供货程序照申请单发货。" data-no="供给链中间那格背后动手的。"></div></div>
+
+<div class="quiz" data-answer="2"><div class="q">5. PVC 状态从 Pending 变 Bound 意味着？（第 6 课）</div>
+<ol class="opts"><li>pod 已经就绪</li><li>provisioner 已交货</li><li>申请被拒绝了</li><li>磁盘已经用满</li></ol>
+<div class="feedback" data-yes="对。PV 已创建并绑定（时间线 T1 完成），pod 要到 T2 才出场。" data-no="Bound = 收货回执。"></div></div>
+
+<div class="quiz" data-answer="1"><div class="q">6. headless Service 的 DNS 查询返回？（第 5 课）</div>
+<ol class="opts"><li>各 pod 自己的地址</li><li>一个虚拟的 IP</li><li>报错说找不到</li><li>最闲的那个</li></ol>
+<div class="feedback" data-yes="对。无 VIP 这颗头，DNS 直接报名册。" data-no="无头 = 没有门牌可报。"></div></div>
+
+<div class="quiz" data-answer="1"><div class="q">7. 删掉一个 pod 后，Deployment 的<b>期望值</b>（spec.replicas 字段，即 READY 分数 3/4 里的分母）会怎样？（第 2、3 课）</div>
+<ol class="opts"><li>完全没有变化</li><li>暂时减一随后恢复</li><li>变成三然后回四</li><li>触发了自动扩缩</li></ol>
+<div class="feedback" data-yes="对。期望（分母）纹丝不动，变的只是现实：READY 分子 3/4 → 4/4 波动后收敛。选项二描述的正是分子——它是其的，但它不是期望值，答非所问。" data-no="注意区分两个数字：READY 分数的分母是期望（永不变化），分子是现实（掉到 3 再回 4）。题目问的是分母。"></div></div>
+
+<div class="quiz" data-answer="2"><div class="q">8. 模型"调用"MCP 工具时实际输出的是？（第 7 课）</div>
+<ol class="opts"><li>直接执行的代码</li><li>结构化的意图文本</li><li>一次网络的数据包</li><li>数据库里的语句</li></ol>
+<div class="feedback" data-yes="对。宿主解析意图后代为执行——模型只产文本。" data-no="模型唯一的输出能力是文本。"></div></div>
+
+<div class="quiz" data-answer="4"><div class="q">9. NAP 里 workspace 数据真正的死亡点？（第 6 课）</div>
+<ol class="opts"><li>pod 被销毁时</li><li>节点重启之时</li><li>用户登出账号</li><li>删除 workspace</li></ol>
+<div class="feedback" data-yes="对。destroy() 三件套一起删，PG 同事务清——其余一切皆可逆。" data-no="哪个操作连 PVC 一起删？"></div></div>
+
+<div class="quiz" data-answer="2"><div class="q">10. kubectl apply 拿到 created 响应意味着？（第 2、4 课）</div>
+<ol class="opts"><li>容器已在运行</li><li>账本已更新而已</li><li>镜像已经下载</li><li>健康检查已通过</li></ol>
+<div class="feedback" data-yes="对。apply 是下单不是收货——收敛要等③ kubelet 拉镜像、过检查。" data-no="created 只表示账本更新。"></div></div>
+
+<h2>八、未完事项与下一层</h2>
+<ul>
+  <li><b>欠着的练习</b>：<a href="../exercises/0001-mini-env-runner/TASK.md">exercises/0001-mini-env-runner</a>——手写清单走 T0–T4 + 补全 run.ts 五个 TODO。基础件阶段唯一未闭环的一环。</li>
+  <li><b>第 8 课</b>：<a href="../lessons/0008-message-lifecycle-map.html">一条消息的旅程</a>（会师课，已写好）——总集篇第四节的一分钟详版。</li>
+  <li><b>钻探层（待写，按需开课）</b>：控制反转与 reconcile 的 NAP 实现 / 数据分层三明治 / 两种 serving 形状实操 / MCP 中转与会话反解 / ACP 可换引擎 / AFS / 多入口汇流。到时候你可以点菜。</li>
+</ul>
+
+<footer>
+  NAP 平台设计课程 · 总集篇（基础件 1–7 册）·
+  <a href="glossary.html">术语表</a> ·
+  <a href="yaml-cheatsheet.html">YAML 速查</a> ·
+  <a href="../lessons/0008-message-lifecycle-map.html">第 8 课：会师</a>
+</footer>
+</main>
+</body>
+</html>

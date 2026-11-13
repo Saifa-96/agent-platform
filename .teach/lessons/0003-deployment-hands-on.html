@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03 · 动手课 —— Deployment 流转实验</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .lab { border: 1.5px solid var(--ink); border-radius: 8px; padding: 0.9rem 1.1rem; margin: 1.4rem 0; background: #fff; }
+  .lab .step-tag { font-family: var(--sans); font-size: 0.78rem; font-weight: 700; color: var(--accent); letter-spacing: 0.08em; }
+  .lab .cmd { font-family: var(--mono); font-size: 0.8rem; background: var(--code-bg); border-radius: 5px; padding: 0.5rem 0.8rem; margin: 0.5rem 0; white-space: pre-wrap; word-break: break-all; }
+  .lab .see { font-size: 0.9rem; margin: 0.4rem 0; }
+  .lab .bind { font-size: 0.85rem; color: var(--ink-soft); border-top: 1px dashed var(--line); padding-top: 0.4rem; margin-top: 0.4rem; }
+  .checklist { font-family: var(--sans); font-size: 0.88rem; border: 1.5px dashed var(--ink-soft); border-radius: 8px; padding: 0.8rem 1.1rem; margin: 1.5rem 0; }
+  .checklist li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 03 / 基础件 3/7 · 动手课</div>
+  <h1>Deployment 流转实验 —— 亲手看它怎么用、怎么转</h1>
+  <div class="meta">约 40 分钟（含课前阅读）· 前置：第 1、2 课 · 产出：亲眼见过一次完整的"声明 → 收敛 → 扩缩 → 自愈 → 滚动升级 → 回滚"，第 4 课的所有概念都有实物可对照</div>
+</header>
+
+<p>第 4 课要讲 Deployment 与 StatefulSet 的概念对比，但概念课直接上容易晕。这一课先让你在真实的集群上把 Deployment 完整玩一遍——第 2 课讲的"期望状态、收敛、自愈"全都变成你亲手触发、亲眼看到的东西。做完再回第 4 课，每一个名词都有对应的记忆画面。</p>
+
+<h2>课前阅读（约 15 分钟，先读再动手）</h2>
+<ul>
+  <li><b>中文系统教程</b>：guangzhengli《<a href="https://guangzhengli.com/courses/kubernetes/">Kubernetes 教程</a>》——从 Container 讲到 Pod、Deployment、Service 的中文动手教程，本地环境用 minikube（与本课一致）。课前重点读它的 <a href="https://guangzhengli.com/courses/kubernetes/deployment/">Deployment 章</a>：YAML 逐字段讲解，删除 pod 后自愈的命令输出直接贴出，与本课实验一一对应。</li>
+  <li><b>动手材料</b>：<a href="https://kubernetes.io/zh-cn/docs/tutorials/hello-minikube/">官方中文教程「Hello Minikube」</a>——从启动 minikube 到创建 Deployment、暴露 Service 的完整走一遍，与本课实验环境完全一致。</li>
+  <li><b>概念材料</b>：<a href="https://kubernetes.io/zh-cn/docs/concepts/workloads/controllers/deployment/">官方中文文档「Deployment」</a>——重点读<b>用例</b>、<b>创建 Deployment</b>、<b>更新 Deployment</b>（含滚动升级）三节，其余跳过。</li>
+  <li><b>补充材料</b>：Jimmy Song《<a href="https://jimmysong.io/book/kubernetes-handbook/">Kubernetes Handbook</a>》——中文开源书稿，适合换一个角度复述。</li>
+</ul>
+
+<h2>准备环境（5 分钟）</h2>
+<p>如果你还没有实验集群，用 k3d 创建一个（它就是在 Docker 里跑 k3s——<b>NAP 快速启动用的同一个内核</b>；用完 <code>k3d cluster delete nap-demo</code> 即可销毁）：</p>
+<div class="lab">
+  <div class="cmd">curl -sL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+k3d cluster create nap-demo
+kubectl get nodes   # 看到一个 Ready 的节点即成功</div>
+</div>
+<p>前置条件：Docker（<code>docker version</code> 正常）。没有的话先装 Docker Desktop 或 OrbStack 的官方 dmg（Intel Mac 别用 brew 装，已无预编译包）。习惯 minikube 的也可以用它，命令对照见下方表格——但推荐 k3d：与 NAP 自部署的运行时同源。</p>
+
+<div class="sidenote"><b>minikube 和第 2 课的 k3s、另一个常见工具 k3d 是什么关系？</b>三者都是"本地实验集群"方案：minikube 在 VM 或 Docker 里跑标准 K8s，老牌、中文教程围绕它的材料最多；k3s 是轻量版 K8s 发行版（第 2 课主角，NAP 自部署用的就是它）；k3d 则是把 k3s 装进 Docker 里跑的工具，创建销毁更快。三者的 kubectl 与实验命令完全一致，本课程实验用哪个都行——默认 minikube。</div>
+
+<p><b>k3s 和标准 K8s 内核有区别吗？</b>API 层面零区别：k3s 通过了 CNCF 一致性认证，kubectl 和所有清单行为完全相同；差异只在打包——单二进制、默认 SQLite 替代 etcd、内置 flannel/Traefik。所以<b>用 k3d 也能跟 minikube 系的教程</b>（比如课前阅读的 guangzhengli 教程），只需替换少数专属命令：</p>
+<table class="map">
+  <tr><th>教程里的 minikube 命令</th><th>k3d 等价命令</th></tr>
+  <tr><td><code>minikube start</code></td><td><code>k3d cluster create k8s</code></td></tr>
+  <tr><td><code>minikube delete</code></td><td><code>k3d cluster delete k8s</code></td></tr>
+  <tr><td><code>eval $(minikube docker-env)</code>（让本地 build 的镜像进集群）</td><td>不需要切环境：正常 <code>docker build</code> 后执行 <code>k3d image import 镜像名:tag</code></td></tr>
+  <tr><td><code>minikube image load xxx</code></td><td><code>k3d image import xxx</code>（自建镜像必须先导入，否则 ImagePullBackOff）</td></tr>
+  <tr><td><code>minikube service xxx</code></td><td><code>kubectl port-forward svc/xxx 8080:80</code></td></tr>
+  <tr><td><code>minikube dashboard</code></td><td>无内置，跳过</td></tr>
+</table>
+
+<h2>六个实验</h2>
+
+<div class="lab">
+  <div class="step-tag">实验 1 · 创建：声明"我要两个"</div>
+  <div class="cmd">kubectl create deployment web --image=nginx:1.27 --replicas=2
+kubectl get deployment web
+kubectl get pods --show-labels</div>
+  <div class="see"><b>你应该看到</b>：两个 pod，名字形如 <code>web-5d8f7c-xxa2v</code>——带随机尾巴（你从来没有给 pod 起过名）；READY 列从 <code>0/2</code> 变成 <code>2/2</code>（收敛过程）；<code>--show-labels</code> 显示每个 pod 都带着 <code>app=web</code> 这枚标签。</div>
+  <div class="bind">概念绑定：你只声明了"2 个副本"，名字是系统起的；标签是按模子盖上去的章——第 4 课"三个名字"辨析的实物。</div>
+</div>
+
+<div class="lab">
+  <div class="step-tag">实验 2 · 扩容：改账本</div>
+  <div class="cmd">kubectl scale deployment web --replicas=4
+kubectl get pods -w</div>
+  <div class="see"><b>你应该看到</b>：多出两个<b>新名字</b>的 pod 陆续出现，最终 4 个 Running。按 Ctrl+C 退出观察。</div>
+  <div class="bind">概念绑定：scale 改的是<b>期望值</b>（2 → 4），新 pod 是 controller 数出缺口后补的——第 2 课循环的手动版。</div>
+</div>
+
+<div class="lab">
+  <div class="step-tag">实验 3 · 自愈：删掉一个看看</div>
+  <div class="cmd">kubectl delete pod web-xxxxx   # 换成你自己的某个 pod 名
+kubectl get pods -w
+kubectl get deployment web</div>
+  <div class="see"><b>你应该看到</b>：被删的 pod 消失，一个新的（又是新名字）很快补上；而 <code>deployment</code> 的输出里 <code>replicas</code> 相关字段<b>自始至终没变过</b>。</div>
+  <div class="bind">概念绑定：期望从未改变，是现实被拉了回去。"没有报警-修复，只有循环"——这句话现在是你的亲眼所见。</div>
+</div>
+
+<div class="lab">
+  <div class="step-tag">实验 4 · 滚动升级：新旧交替</div>
+  <div class="cmd">kubectl set image deployment web nginx=nginx:1.28
+kubectl rollout status deployment web
+kubectl get pods</div>
+  <div class="see"><b>你应该看到</b>：rollout status 逐条打印升级进度；结束后 get pods 里出现了一批按新模子造的新 pod，旧的逐步消失。<b>过程中新旧 pod 是共存交替的</b>（先起新的、再删旧的），不是先全删再重建。</div>
+  <div class="bind">概念绑定：滚动升级是 Deployment 的内置能力，"服务不中断"的机制就藏在这个交替节奏里——第 4 课的正式内容。</div>
+</div>
+
+<div class="lab">
+  <div class="step-tag">实验 5 · 回滚：退回上一版</div>
+  <div class="cmd">kubectl rollout history deployment web
+kubectl rollout undo deployment web
+kubectl rollout history deployment web</div>
+  <div class="see"><b>你应该看到</b>：历史里至少两个版本记录；undo 之后回到 1.27。</div>
+  <div class="bind">概念绑定：回滚不是"特殊操作"，也是一次"改账本"——把期望指回旧版本，让循环再收敛一次。声明式的红利。</div>
+</div>
+
+<div class="lab">
+  <div class="step-tag">实验 6 · 标签认领：selector 的实物</div>
+  <div class="cmd">kubectl get pods -l app=web
+kubectl describe deployment web | grep -A 2 "Selector"</div>
+  <div class="see"><b>你应该看到</b>：用 <code>-l app=web</code> 查到的正是 Deployment 管的那批 pod；describe 里显示的 Selector 正是 <code>app=web</code>——两者对上了。</div>
+  <div class="bind">概念绑定：controller 数副本数时"数的就是这个查询的结果"。第 4 课讲"认领标准"时，回看这一步。</div>
+</div>
+
+<h2>记录卡（每实验一行，回来告诉我）</h2>
+<div class="checklist">
+<ol>
+  <li>实验 1：pod 的名字长什么样？标签是什么？</li>
+  <li>实验 2：扩出来的新 pod 和旧 pod 名字有什么共同前缀？</li>
+  <li>实验 3：删 pod 前后，Deployment 的哪个字段始终没变？</li>
+  <li>实验 4：升级期间最多同时存在几个 pod？新旧交替的顺序是？</li>
+  <li>实验 5：历史里有几条记录？undo 后镜像回到几？</li>
+  <li>实验 6：用 label 查询的结果和 Deployment 的 Selector 对上了吗？</li>
+</ol>
+</div>
+
+<h2>检索练习（绑定你刚看到的现象）</h2>
+
+<div class="quiz" data-answer="1">
+  <div class="q">1. 实验 3 里你删掉一个 pod，Deployment 的 replicas 期望值发生了什么变化？</div>
+  <ol class="opts">
+    <li>完全没有变化</li>
+    <li>暂时减一随后恢复</li>
+    <li>变成三然后回四</li>
+    <li>触发了自动扩缩</li>
+  </ol>
+  <div class="feedback" data-yes="正确。期望从未改变——被推回的是现实。这就是自愈和"修复"的本质区别。" data-no="提示：删 pod 动的是现实，不是账本。期望什么时候变过？"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">2. 实验 4 的滚动升级期间，新旧副本的关系是？</div>
+  <ol class="opts">
+    <li>先删光旧的</li>
+    <li>新的一次全起</li>
+    <li>共存交替进行</li>
+    <li>随机一半一半</li>
+  </ol>
+  <div class="feedback" data-yes="正确。先起新的、再删旧的，交替推进——"服务不中断"就靠这个节奏。" data-no="回忆 rollout status 期间 kubectl get pods 看到的数量变化。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">3. <code>kubectl get pods -l app=web</code> 查到的是哪些 pod？</div>
+  <ol class="opts">
+    <li>名字含 web 的</li>
+    <li>带这枚标签的</li>
+    <li>最近创建的</li>
+    <li>正在运行的</li>
+  </ol>
+  <div class="feedback" data-yes="正确。-l 是标签查询，与名字无关——Deployment 的认领标准用的正是同一个机制。" data-no="提示：-l 查询的是标签，不是名字，也不是状态。"></div>
+</div>
+
+<div class="next">
+  <p><b>清理（可选）</b>：实验数据不必保留，想重做就 <code>kubectl delete deployment web</code>；整个集群不要了就 <code>k3d cluster delete nap-demo</code>。</p>
+  <p><b>下一课预告</b>：第 4 课（Deployment 与 StatefulSet）——你刚见过的所有现象将升格为概念：副本可不可以互换的分水岭、三种名字的辨析、NAP 对 StatefulSet 的创造性挪用。带着记录卡去。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：任何一步的现象和你预期不一致——那正是最值得拿回来讨论的时刻，直接贴给我。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 03（基础件系列 3/7 · 动手课）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="0002-k3s-and-desired-state.html">上一课：k3s 与期望状态</a> ·
+  <a href="0004-deployment-vs-statefulset.html">下一课：Deployment 与 StatefulSet</a>
+</footer>
+</main>
+</body>
+</html>

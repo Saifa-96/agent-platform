@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>07 · MCP 基础 — agent 如何长出工具</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .trio { font-family: var(--sans); font-size: 0.86rem; display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 1.5rem 0; }
+  .trio .box { flex: 1 1 12rem; border: 1.5px solid var(--ink); border-radius: 7px; padding: 0.6rem 0.85rem; background: #fff; }
+  .trio .box b { display: block; }
+  .trio .box .sub { color: var(--ink-soft); font-size: 0.76rem; line-height: 1.5; }
+  .relay { font-family: var(--sans); font-size: 0.84rem; border: 1.5px solid var(--ink); border-radius: 8px; padding: 0.8rem 1rem; margin: 1.4rem 0; line-height: 1.8; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 07 / 基础件 7/7 · 最后一个基础件</div>
+  <h1>MCP 基础 — agent 如何"长出工具"</h1>
+  <div class="meta">约 15 分钟 · 前置：无（你在 butterfly 里已用过 MCP 客户端——本课补协议骨架，并站到 NAP 的"服务器侧"视角）· 产出：说清 MCP 的三个动作和"宿主是中间人"的结构</div>
+</header>
+
+<p>前六课的 K8s 基础件解决的是"agent 住在哪、怎么活"；这最后一课解决"agent 怎么获得能力"。模型本体只会一件事：读文本、产文本。它能查数据库、建沙箱、发消息，靠的都是外部工具——而 <b>MCP（Model Context Protocol，模型上下文协议）</b>就是连接 agent 与工具的标准化插座。</p>
+
+<div class="sidenote">名字来历与身世：Model Context Protocol，Anthropic 于 2024 年底开源的协议，迅速成为行业事实标准（OpenAI、Google、微软相继宣布支持）。类比：USB 之于外设——任何人按接口造设备（工具服务器），任何电脑（agent 宿主）都能插上就用，不用一对接线。你在 butterfly 的 mcp/ 模块里已经是"插座的使用侧"。</div>
+
+<h2>协议就三个动作</h2>
+<div class="trio">
+  <div class="box"><b>① initialize（握手）</b><span class="sub">客户端与服务器互相亮身份和能力："我支持这些功能版本，你呢？"——对上暗号才继续</span></div>
+  <div class="box"><b>② tools/list（发现）</b><span class="sub">客户端问"你有哪些工具？"，得到清单：每个工具的名字、给模型看的描述、参数的 JSON Schema</span></div>
+  <div class="box"><b>③ tools/call（调用）</b><span class="sub">客户端发"调用工具 X，参数 Y"，服务器执行后返回结果</span></div>
+</div>
+<p>协议里还有 resources（给模型读的资源）和 prompts（预置提示模板）两样，目前生态的主力是 tools——本课只盯主力。</p>
+
+<h2>最关键的认知：模型从不直接连 MCP 服务器</h2>
+<p>这张结构图是本课的核心，也是很多初学者的盲区——中间有一个<b>宿主（host/client）</b>，所有 MCP 通信都经过它：</p>
+
+<div class="relay">
+<b>① 宿主启动时</b>：连接各个 MCP 服务器 → 握手 → 拿回工具清单<br>
+<b>② 对话时</b>：宿主把工具清单<b>以文本形式放进模型的上下文</b>（"你有这些工具可用：……"）<br>
+<b>③ 模型决策</b>：模型输出的仍然是文本——"我想调用 create_sandbox，参数 image=python:3.12"<br>
+<b>④ 宿主执行</b>：宿主解析这句话 → 真正发起 MCP 调用 → 服务器干活 → 结果文本回给模型<br>
+<b>⑤ 模型继续</b>：模型读到结果，决定下一步——循环
+</div>
+
+<p>也就是说：模型对工具的全部"知识"就是清单里那段<b>描述文本</b>；模型的全部"调用"就是一段<b>结构化的意图输出</b>。真正跑腿的是宿主。这个结构和你在 butterfly 引擎里实现的 turn 循环（provider 装配 → 工具表注入 → 解析工具调用 → 执行回填）是同一个形状。</p>
+
+<h2>传输方式：两种</h2>
+<table class="map">
+  <tr><th>传输</th><th>形态</th><th>典型场景</th></tr>
+  <tr><td>stdio</td><td>MCP 服务器作为宿主<b>本机的一个子进程</b>，走标准输入输出</td><td>本地工具（文件操作、本地搜索）</td></tr>
+  <tr><td>Streamable HTTP</td><td>MCP 服务器是个 HTTP 服务，远程可达</td><td>平台化工具、SaaS 集成</td></tr>
+</table>
+<p>记住这张表的原因：它决定了"工具离 agent 多远"。NAP 的平台工具全是第二种——工具服务器住在 control-plane 里，agent pod 远程调用（中间还有 pod 内一跳 mcp-forward，下面马上看）。</p>
+
+<h2>NAP 的用法（轻量预告，细节在钻探课）</h2>
+<p>NAP 把整套平台中间件做成了 <b>MCP 工具服务器</b>——control-plane 就是那个服务器（<span class="cite">control-plane/src/mcp/tools.ts</span>），一次性注册八个工具族：</p>
+<table class="map">
+  <tr><td>memory</td><td>记忆存取</td><td>sandbox</td><td>建沙箱、跑命令、取文件</td></tr>
+  <tr><td>agent</td><td>agent 互相调用</td><td>browser</td><td>远程浏览器</td></tr>
+  <tr><td>skills</td><td>技能管理</td><td>AFS</td><td>跨 agent 共享目录</td></tr>
+  <tr><td>export_file_url</td><td>铸公开分享链接</td><td>builder-mode</td><td>搭建模式</td></tr>
+</table>
+<p>而 agent 那一侧的配置不直连 control-plane，指向 pod 内的一个转发层（<b>mcp-forward</b>）：agent CLI 的配置里<b>不含任何凭证</b>，转发层出站时才附上 token。为什么这么绕、token 怎么反解出会话上下文、工具集怎么按请求定制——这是钻探课"控制反转与 MCP 中转"的主题，此处只立路标。</p>
+
+<h2>检索练习</h2>
+
+<div class="quiz" data-answer="3">
+  <div class="q">1. 谁真正和 MCP 服务器建立连接、收发协议消息？</div>
+  <ol class="opts">
+    <li>模型本身直连</li>
+    <li>用户的浏览器</li>
+    <li>宿主程序居中</li>
+    <li>数据库的代理</li>
+  </ol>
+  <div class="feedback" data-yes="正确。模型只产文本；宿主拿清单、注入上下文、解析意图、执行调用——所有 MCP 通信都经过宿主。" data-no="回忆结构图五步：从头到尾跑腿的是谁？模型只做了两件事：读文本、产文本。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">2. tools/list 返回的清单里，模型认识一个工具靠什么？</div>
+  <ol class="opts">
+    <li>服务器的源代码</li>
+    <li>名字加描述文本</li>
+    <li>网络端口与地址</li>
+    <li>官方注册的证书</li>
+  </ol>
+  <div class="feedback" data-yes="正确。模型对工具的全部知识就是清单里的名字、描述和参数 Schema——都是文本。所以 NAP 的工具描述写得像产品文档：描述质量直接决定模型用得好不好。" data-no="提示：模型能"读"的只有进入它上下文的文本。"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">3. 模型"调用"一个工具时，它实际输出的是什么？</div>
+  <ol class="opts">
+    <li>直接执行的代码</li>
+    <li>一次网络的数据包</li>
+    <li>数据库里的语句</li>
+    <li>结构化的意图文本</li>
+  </ol>
+  <div class="feedback" data-yes="正确。模型输出"我想调用 X 工具带参数 Y"的结构化文本，宿主解析后替它执行——这就是你 butterfly turn 循环里解析工具调用那一步。" data-no="模型唯一的输出能力是文本——"调用"也是一段文本，等宿主来执行。"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">4. MCP 的握手（initialize）发生在什么时候？</div>
+  <ol class="opts">
+    <li>宿主连接服务器时</li>
+    <li>模型每次回复前</li>
+    <li>用户发消息之后</li>
+    <li>工具执行完成时</li>
+  </ol>
+  <div class="feedback" data-yes="正确。握手是连接建立后双方亮能力、对版本——之后才有 tools/list 和 tools/call。每条连接只握手一次。" data-no="握手是客户端与服务器之间的事，发生在连接刚建立时——和模型、用户都不直接相关。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">5. NAP 里扮演 MCP 服务器（提供工具）的是谁？</div>
+  <ol class="opts">
+    <li>agent pod 自己</li>
+    <li>control-plane 一侧</li>
+    <li>用户的浏览器</li>
+    <li>外部的镜像仓库</li>
+  </ol>
+  <div class="feedback" data-yes="正确。control-plane 的 mcp/tools.ts 按请求注册八个工具族；agent 通过 pod 内的 mcp-forward 转发过来调用——零凭证的那一跳。" data-no="回忆：平台把中间件（沙箱/浏览器/记忆/AFS）做成 MCP 工具——谁持有这些能力，谁就是服务器。"></div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <div class="q">6. stdio 和 Streamable HTTP 两种传输的本质区别是？</div>
+  <ol class="opts">
+    <li>速度的快与慢</li>
+    <li>收费与免费之别</li>
+    <li>加密方式的不同</li>
+    <li>工具离得近或远</li>
+  </ol>
+  <div class="feedback" data-yes="正确。stdio = 工具是宿主本机的子进程；HTTP = 工具是远程服务。NAP 的平台工具全是远程形态（还隔了一跳 mcp-forward）。" data-no="提示：一个把服务器当本地子进程拉起，一个通过网络连远程服务——距离不同。"></div>
+</div>
+
+<div class="next">
+  <p><b>首要阅读</b>：<a href="https://modelcontextprotocol.io/zh-CN/docs/getting-started/intro">MCP 官方中文文档入门页</a>——只读概念介绍部分，协议细节当字典查。</p>
+  <p><b>动手（可选，10 分钟）</b>：两个方向任选——① 打开 butterfly 的 <code>packages/xixi/src/mcp/</code>，用本课的"三个动作"对照你们引擎的 MCP 客户端代码；② 打开 NAP 的 <span class="cite">control-plane/src/mcp/tools.ts</span> 的 registerTools，数一数注册了几个工具族、每个族的文件在哪。</p>
+  <p><b>下一课预告</b>：第 8 课会师——一条消息的完整旅程。基础件全部就位，是把你这几天所有的线头（pod、期望状态、Deployment、Service、PVC、MCP）编成一张图的时候了。<b>建议先补练习 0001 再上课。</b></p>
+  <div class="ask">💬 <b>我是你的老师</b>：MCP 的任何细节（Schema 怎么写、描述怎么调教、stdio 的坑）都可以展开问。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 07（基础件系列 7/7）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="0006-pvc-and-storageclass.html">上一课：PVC 与 StorageClass</a> ·
+  <a href="0008-message-lifecycle-map.html">下一课：一条消息的旅程</a> ·
+  <a href="https://modelcontextprotocol.io/zh-CN">MCP 官方中文文档</a>
+</footer>
+</main>
+</body>
+</html>

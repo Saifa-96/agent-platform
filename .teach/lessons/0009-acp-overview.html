@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>09 · ACP 全景 — 三个角色与一场对话的形状</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .roles { display: flex; gap: 0.8rem; flex-wrap: wrap; margin: 1.4rem 0; font-family: var(--sans); font-size: 0.85rem; }
+  .roles .r { flex: 1 1 12rem; border: 1.5px solid var(--ink); border-radius: 8px; padding: 0.6rem 0.8rem; background: #fff; }
+  .roles .r b { display: block; margin-bottom: 0.25rem; }
+  .roles .r .sub { color: var(--ink-soft); font-size: 0.78rem; line-height: 1.5; }
+  .seq { font-family: var(--mono); font-size: 0.78rem; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.1rem; margin: 1.2rem 0; line-height: 1.8; white-space: pre; overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 09 / ACP 模块 1/6 · 概念课</div>
+  <h1>ACP 全景 — 三个角色与一场对话的形状</h1>
+  <div class="meta">约 12 分钟 · 前置：第 7 课（MCP）、JSON-RPC 问答 · 产出：说清 ACP 解决什么、三方角色、一场对话的五个方法、与 MCP 的分工 · 下一课起全部动手</div>
+</header>
+
+<p>你在 agent-hub 里撞的墙（"不了解协议写不下去"）这门课补。ACP（Agent Client Protocol）是 Zed 发起的开放协议，目标一句话：<b>让任何客户端（编辑器、IDE、平台）能驱动任何 agent</b>——USB 之于外设。你的 acp-adapter 的 ws 端点，本质上就是"把 pi 变成一个讲 ACP 的服务"。</p>
+
+<h2>三个角色</h2>
+<div class="roles">
+  <div class="r"><b>Client（客户端）</b><span class="sub">发起方：Zed 编辑器、IDE、你将来的 control-plane。决定"开哪个会话、发什么话、要不要中断"。</span></div>
+  <div class="r"><b>Agent（助手）</b><span class="sub">被驱动方：LLM 驱动的助手进程（codex CLI、你的 PiBridge）。处理请求、产出流式更新。</span></div>
+  <div class="r"><b>Session（会话）</b><span class="sub">对话的容器：一个 agent 可同时开多个 session，各自独立上下文。有独立的生命周期（新建/加载/删除）。</span></div>
+</div>
+
+<div class="sidenote">注意"谁是 Client"可能和直觉相反：NAP 的桥 spawn codex CLI 时，<b>桥是 Client，CLI 是 Agent</b>。角色由"谁发起谁响应"决定，不由谁更大决定。你的 acp-adapter 暴露 ws 端点时，<b>你的 adapter 是 Agent 侧，Zed 是 Client</b>。</div>
+
+<h2>一场对话的形状（本课核心，背下来）</h2>
+<p>所有通信都是 JSON-RPC 信封（你已学：id 配对请求响应、无 id 是通知）。一次完整的对话：</p>
+
+<div class="seq">Client                                              Agent（你的 adapter）
+  │  ── request ──────────────────────────────→  │
+  │     initialize（握手：协议版本、认证方式、能力）  │
+  │  ←──────────────── response ──────────────   │
+  │                                              │
+  │  ── request: session/new ────────────────→   │  开会话（cwd、MCP 服务器列表）
+  │  ←──────── response: sessionId ──────────    │
+  │                                              │
+  │  ── request: session/prompt（用户的话）────→   │  一个 turn 开始
+  │  ←── notification: session/update ───────    │  "正在想…"（agent_message_chunk）
+  │  ←── notification: session/update ───────    │  "调用工具 git diff…"（tool_call）
+  │  ←── notification: session/update ───────    │  "工具结果…"（tool_call_update）
+  │  ←── notification: session/update ───────    │  "答案是…"（agent_message_chunk × N）
+  │  ←──────── response: stopReason ─────────    │  turn 结束（end_turn / cancelled / …）
+  │                                              │
+  │  ── request: session/prompt …（下一轮）─────→  │</div>
+
+<p>五个方法名就构成骨架：<b>initialize → session/new → session/prompt → session/update（通知）→ 响应携带 stopReason</b>。流式输出的全部魔法就是那一串 `session/update` 通知——你在 JSON-RPC 课见过的"无 id 消息"。</p>
+
+<div class="sidenote"><b>何时带 id（一句规则 + 一张判定表）</b>：发出消息前问"我需要对方回答我吗？"——需要 → request（贴 id 票根）；不需要、只是播报 → notification（无 id，且协议禁止回复它）。| initialize/session/new/session/prompt：要结果 → ✓ id | session/update：进度播报，不等回音 → ✗ | request_permission：要"允许/拒绝"的答案 → ✓ id |。外卖类比：下单（request）→ 骑手轨迹推送（notification × N）→ 送达（response）——同一个订单号悬置全程，通知流从旁流过，最后 response 带号回来收尾。</div>
+
+<h2>双向：Agent 也会反过来调 Client</h2>
+<p>上图只画了 Client 发起的箭头，但 ACP 是<b>双向</b>协议：Agent 可以向 Client 发独立的方法调用，最重要的是 <b>`session/request_permission`</b>——"我要执行这个工具/命令，允许吗？"Client 的用户点允许/拒绝，答案回到 Agent 继续干活。这就是 NAP 里 `onPermissionRequest` 回调（你的 adapter 自动选第一个选项那处）在协议层的真身。此外还有 `fs/read_text_file`（Agent 请 Client 帮忙读写它看不见的文件）、`terminal/*` 一族（请 Client 开终端）等——<b>每一个都是协议预定义的独立方法，不用你发明，只需你决定何时发起、以及如何响应</b>。它们发生在 turn 执行期间，但不是嵌在 prompt 里的子请求：同一条连接上方向相反的独立 JSON-RPC 往返，靠各自 id 配对。</p>
+
+<h2>传输无关：stdio 与 WebSocket</h2>
+<table class="map">
+  <tr><th>传输</th><th>场景</th><th>和你的关系</th></tr>
+  <tr><td>stdio（nd-JSON 流）</td><td>Client 把 Agent 当<b>本机 CLI 子进程</b> spawn，走标准输入输出</td><td>了解即可（生态里 CLI 型 agent 的常见形态）。本项目已决策：只支持 SDK 型 core，不 spawn CLI——不用实现</td></tr>
+  <tr><td>WebSocket</td><td>Agent 是<b>网络服务</b>，Client 远程连</td><td><b>你的 M3：Zed 直连 adapter 的 ws 端点——本项目唯一要实现的传输</b></td></tr>
+</table>
+<p>同一套方法、同一套信封，换传输不改语义——这就是为什么 SDK 把传输做成了可插拔层（transports 目录）。</p>
+
+<h2>与 MCP 的分工（两张插座，别混）</h2>
+<table class="map">
+  <tr><th></th><th>MCP（第 7 课）</th><th>ACP（本课）</th></tr>
+  <tr><td>连接的两端</td><td>agent ↔ <b>工具服务器</b></td><td><b>客户端</b> ↔ agent</td></tr>
+  <tr><td>解决</td><td>agent 怎么获得能力</td><td>agent 怎么被驱动、被呈现</td></tr>
+  <tr><td>典型方法</td><td>tools/list、tools/call</td><td>session/prompt、session/update</td></tr>
+</table>
+<p>一个真实 agent 同时站在两张插座中间：向左（Client）说 ACP，向右（工具）说 MCP。NAP 的架构正是这么摆的——adapter 对 cp 说 ACP/SSE，mcp-forward 对工具说 MCP。ACP 还有 `mcp_servers` 透传（Agent 告诉 Client"我要这些 MCP 服务器"，由 Client 侧拉起并回连）——第 13 课展开。</p>
+
+<h2>版本雷达（只看一眼，不对着写码）</h2>
+<p>你给的 <a href="https://agentclientprotocol.com/protocol/v2/overview">v2 overview</a> 是草案：SDK 的迁移文档明示 v2 入口 experimental、随时不兼容变更。课程与你的代码全部对齐 <a href="https://agentclientprotocol.com/protocol/v1/overview">v1</a>（SDK 稳定入口、Zed 现行）。v2 里值得知道的方向：会话压缩、模式（mode）等——等它稳定时你再迁移，届时 SDK 的迁移文档会像这次一样给你对照表。</p>
+
+<h2>检索练习</h2>
+
+<div class="quiz" data-answer="3">
+  <div class="q">1. 你的 acp-adapter 在 ws 端点上扮演 ACP 的哪个角色？</div>
+  <ol class="opts">
+    <li>Client</li>
+    <li>Session</li>
+    <li>Agent 侧</li>
+    <li>工具服务器</li>
+  </ol>
+  <div class="feedback" data-yes="正确。Zed（Client）连过来驱动你；adapter 响应请求、推送 session/update。角色由谁发起谁响应决定。" data-no="提示：谁被驱动、谁产出流式更新？"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">2. 流式输出（打字机效果）靠的是哪种 JSON-RPC 消息？</div>
+  <ol class="opts">
+    <li>带 id 的请求</li>
+    <li>无 id 的通知</li>
+    <li>错误码响应</li>
+    <li>批量消息包</li>
+  </ol>
+  <div class="feedback" data-yes="正确。session/update 是通知（无 id，不回复）——发一条显示一条。" data-no="回忆 JSON-RPC 三种信封：哪种永远不期待回答？"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">3. 一个 turn 的结束以什么为标志？</div>
+  <ol class="opts">
+    <li>prompt 响应的 stopReason</li>
+    <li>连接的关闭</li>
+    <li>session 的删除</li>
+    <li>特殊的更新通知</li>
+  </ol>
+  <div class="feedback" data-yes="正确。session/prompt 的响应（end_turn / cancelled / max_tokens…）宣告 turn 收场。" data-no="turn ≠ 连接 ≠ 会话——哪个消息回答了"这轮跑完了吗"？"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">4. `permission/request` 这个调用的方向是？</div>
+  <ol class="opts">
+    <li>Client 请求 Agent</li>
+    <li>Client 通知 Agent</li>
+    <li>双向都可发起</li>
+    <li>Agent 请求 Client</li>
+  </ol>
+  <div class="feedback" data-yes="正确。Agent 反向调用 Client："允许我执行吗？"——ACP 是双向协议的体现。" data-no="谁在请示批准？干活的那个。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">5. MCP 和 ACP 的连接对象分别是？</div>
+  <ol class="opts">
+    <li>都是 agent 与工具</li>
+    <li>agent↔工具；客户端↔agent</li>
+    <li>都是客户端与 agent</li>
+    <li>客户端↔agent；agent↔工具</li>
+  </ol>
+  <div class="feedback" data-yes="正确。MCP 给 agent 能力，ACP 让 agent 被驱动——一个 agent 站在两张插座中间。" data-no="回忆分工表：谁解决"获得能力"，谁解决"被驱动"？"></div>
+</div>
+
+<div class="next">
+  <p><b>首要阅读</b>：<a href="https://agentclientprotocol.com/protocol/v1/overview">ACP v1 官方 overview</a>——通读一遍，和本课对照，术语完全一致即达标。</p>
+  <p><b>动手预习（5 分钟）</b>：打开 <span class="cite">agent-hub/internal/acp-adapter/node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts</span>，只找三个类型的影子：PromptResponse、SessionNotification、AgentCapabilities——下一课的握手实验要用它们。</p>
+  <p><b>下一课预告</b>：第 10 课，第一次握手——用 SDK 在内存里把一个 client app 直连一个 echo agent app，跑通 initialize → session/new → prompt → 收 update。零基础设施，几十行代码看到协议活起来。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：概念卡住直接问——"stopReason 有哪几种""fs/read 什么时候用"都值得展开。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 09（ACP 模块 1/6）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="0007-mcp-basics.html">第 7 课：MCP 基础</a> ·
+  <a href="https://agentclientprotocol.com/protocol/v1/overview">ACP v1 官方文档</a>
+</footer>
+</main>
+</body>
+</html>

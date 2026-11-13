@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>08 · 会师 — 从零开始写一个 agent-platform</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/quiz.js" defer></script>
+<style>
+  .build { border: 1.5px solid var(--ink); border-radius: 8px; padding: 0.75rem 1rem; margin: 1rem 0; background: #fff; }
+  .build .step-tag { font-family: var(--sans); font-size: 0.78rem; font-weight: 700; color: var(--accent); letter-spacing: 0.06em; }
+  .build .gap { color: var(--ink-soft); font-size: 0.86rem; margin-top: 0.3rem; }
+  .build .make { margin: 0.35rem 0; }
+  .build .anchor { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-soft); border-top: 1px dashed var(--line); margin-top: 0.4rem; padding-top: 0.35rem; }
+  .flow { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: stretch; margin: 1.5rem 0; font-family: var(--sans); }
+  .flow .hop { flex: 1 1 8rem; min-width: 8rem; border: 1.5px solid var(--ink); border-radius: 6px; padding: 0.6rem 0.7rem; font-size: 0.82rem; line-height: 1.45; background: #fff; }
+  .flow .hop b { display: block; font-size: 0.9rem; margin-bottom: 0.2rem; }
+  .flow .hop .where { font-family: var(--mono); font-size: 0.68rem; color: var(--ink-soft); }
+  .flow .arrow { align-self: center; color: var(--accent); font-size: 1.2rem; font-weight: 700; }
+</style>
+</head>
+<body>
+<main>
+<header class="lesson-head">
+  <div class="kicker">Lesson 08 / 会师点（先学完 0001–0007 基础件）</div>
+  <h1>从零开始写一个 agent-platform — 施工顺序与改造接缝</h1>
+  <div class="meta">约 25 分钟 · 前置：基础件七课 · 产出：按施工顺序从零讲出 NAP 的每一层及其动机；说清"重建 butterfly"时 NAP 给什么、你带什么、接缝在哪</div>
+</header>
+
+<p>前七课给了你全部零件。这一课换建筑师视角：**如果从零写一个 agent-platform，你按什么顺序造什么，每一步是被什么缺口逼出来的**。这不是历史复盘——你们要自己重建一个这样的平台，这个施工顺序就是你的施工图：NAP 的每一层为什么存在，决定了你的版本哪些层照抄设计、哪些要换方案。</p>
+
+<h2>施工八步</h2>
+
+<div class="build">
+  <div class="step-tag">第 0 步 · 地基：一个 K8s 集群</div>
+  <div class="gap">缺口：agent 需要一个"能自愈、能伸缩、能声明式管理"的运行底座，自己从零写这些等于重造 K8s。</div>
+  <div class="make"><b>造：</b>直接采用 K8s（自部署用 k3s）。你的平台从第一行代码起就是"K8s 之上的应用"。</div>
+  <div class="anchor">对应：第 2–6 课全部 · NAP：self-host/get.sh（一条命令装 k3s + 平台）</div>
+</div>
+
+<div class="build">
+  <div class="step-tag">第 1 步 · 最小可行：一个 agent 活在 pod 里</div>
+  <div class="gap">缺口：agent 进程直接跑在机器上会随机器死、无隔离、多租户互踩。</div>
+  <div class="make"><b>造：</b>workspace pod 的形状——agent 容器（前沿 core 的适配器）+ 卷挂 /workspace + sidecar 们；外面套 Deployment 保它自愈。</div>
+  <div class="anchor">对应：第 1、4 课 · NAP：internal/k8s-provider/workspace-spec.ts（pod 形状唯一真相源）</div>
+</div>
+
+<div class="build">
+  <div class="step-tag">第 2 步 · 生命线：期望状态账本 + 收敛器</div>
+  <div class="gap">缺口：谁决定"该有哪些 workspace 在跑"？平台需要一个常驻的决策者——但直接调 K8s API 创建 pod 是命令式，重启/升级/缩容全要自己写。</div>
+  <div class="make"><b>造：</b>平台自己的账本（PostgreSQL：workspace 表 + 期望状态）+ 一个收敛器（env-runner：盯着账本，翻译成 K8s 对象）。三层套娃的声明式：改平台账本 → 改 K8s 账本 → 现实收敛。</div>
+  <div class="anchor">对应：第 2 课哲学 · NAP：routes/workspaces/write.ts 的 Control inversion 注释 + env-runner-k8s/</div>
+</div>
+
+<div class="build">
+  <div class="step-tag">第 3 步 · 会话真身：SSE 拦截器</div>
+  <div class="gap">缺口：agent 的流式响应直通客户端的话，会话只存在于 pod 内存——pod 一死，历史全丢。</div>
+  <div class="make"><b>造：</b>让响应流穿过平台：拦截器实时把消息/统计写入 PG。会话真身从此住在数据库，pod 降级为可替换的执行者——这是后面一切（缩到零、换副本、换 core）的前提。</div>
+  <div class="anchor">对应：第 2 课"生死边界" · NAP：lib/sse.ts 的 createInterceptedSSEResponse</div>
+</div>
+
+<div class="build">
+  <div class="step-tag">第 4 步 · 入口：HTTP API + chat 通道 + 四道关</div>
+  <div class="gap">缺口：多租户共用一套 pod，一条消息的调度要解决"这个会话没人在跑吗（租约）""这个 workspace 还装得下吗（容量）""它睡着吗（唤醒）""该找哪个副本（亲和）"。</div>
+  <div class="make"><b>造：</b>chat API 入口 + 四关串联 + 断线重连。注意顺序有讲究：前两关不过，不花唤醒的钱。</div>
+  <div class="anchor">对应：第 3、5 课 · NAP：services/chat/executeChat.ts（租约→容量→ensureWorkspaceRunning→pickReplicaForTurn）</div>
+</div>
+
+<div class="build">
+  <div class="step-tag">第 5 步 · 成本：两种 serving 模式</div>
+  <div class="gap">缺口：大部分 workspace 大部分时间没人用，常驻 = 为闲置烧钱；但直接砍掉又伤延迟。</div>
+  <div class="make"><b>造：</b>给用户开关——static（常驻秒回：单副本 Deployment + RWO 盘）与 auto-scaling（缩到零省钱：StatefulSet 稳定身份 + RWX 共享卷 + headless 逐副本寻址做会话亲和）。一条决策链从业务落到存储和 DNS。</div>
+  <div class="anchor">对应：第 4、5、6 课 · NAP：static-workload.ts / auto-scaling-workload.ts / workspace-address.ts</div>
+</div>
+
+<div class="build">
+  <div class="step-tag">第 6 步 · 能力插座：平台当 MCP 服务器</div>
+  <div class="gap">缺口：agent 需要沙箱、浏览器、记忆、文件共享——这些是平台的能力不是引擎的；写死在引擎里则换 core 全要重写。</div>
+  <div class="make"><b>造：</b>control-plane 做 MCP 工具服务器（八工具族按请求注册），pod 内 mcp-forward 转发且 core 配置零凭证。能力与引擎解耦：换 core，工具不动。</div>
+  <div class="anchor">对应：第 7 课 · NAP：mcp/tools.ts + internal/mcp-forward/</div>
+</div>
+
+<div class="build">
+  <div class="step-tag">第 7 步 · 交付：文件从 pod 到用户</div>
+  <div class="gap">缺口：产出文件锁在集群里的 PVC 上，用户看不见。</div>
+  <div class="make"><b>造：</b>pod 内 dufs 把 /workspace 讲成 HTTP → 平台代理 → 文件面板/下载/限时分享 URL。注意：不复制文件，是给现有数据开视图。</div>
+  <div class="anchor">对应：第 1、6 课 · NAP：routes/workspaces/agent.ts + mcp/tools/export-file-url.ts</div>
+</div>
+
+<div class="build">
+  <div class="step-tag">第 8 步 · 之后（NAP 还在长的部分，也是你要研究的接缝层）</div>
+  <div class="make">多入口（channel-gateway 接微信/Slack、scheduler 定时）、teamwork（agent 互调）、builder mode（对话式搭建）、web UI 插件点、Applications/App Spec（2026-10 上游新主题：一份 spec 声明整个应用）。改造 butterfly 时，产品层的落点大概率在这些缝里。</div>
+  <div class="anchor">NAP：channel-gateway/ scheduler/ teamwork 相关路由</div>
+</div>
+
+<h2>落成后的运行图：一条消息的旅程</h2>
+<p>施工完成后，一条消息走的是这样一条链——每一格你现在都认得：</p>
+<div class="flow">
+  <div class="hop"><b>① 通道</b>Web UI / API / 定时 / webhook<br><span class="where">channel-gateway, scheduler</span></div>
+  <div class="arrow">→</div>
+  <div class="hop"><b>② 调度四关</b>租约 → 容量 → 唤醒 → 选副本<br><span class="where">chat/executeChat.ts</span></div>
+  <div class="arrow">→</div>
+  <div class="hop"><b>③ agent pod</b>core 适配器收到 /chat<br><span class="where">ACP adapter</span></div>
+  <div class="arrow">→</div>
+  <div class="hop"><b>④a 直接写</b>/workspace（PVC 上）<br><span class="where">第 1、6 课</span></div>
+  <div class="arrow">/</div>
+  <div class="hop"><b>④b 走工具</b>MCP（mcp-forward → cp）→ 沙箱/记忆/浏览器<br><span class="where">第 7 课</span></div>
+  <div class="arrow">→</div>
+  <div class="hop"><b>⑤ 交付</b>SSE 回程穿拦截器入库；dufs 递文件<br><span class="where">lib/sse.ts</span></div>
+</div>
+
+<h2>生死边界（改造时的架构红线）</h2>
+<table class="map">
+  <tr><th>状态</th><th>真身在哪</th><th>pod 死了？</th></tr>
+  <tr><td>会话与消息</td><td>PostgreSQL（SSE 拦截器实时写）</td><td>活</td></tr>
+  <tr><td>/workspace 文件（含 agent HOME）</td><td>workspace 专属 PVC</td><td>活</td></tr>
+  <tr><td>容器内 /workspace 之外的一切</td><td>pod 文件系统</td><td>死</td></tr>
+  <tr><td>沙箱里的东西</td><td>独立集群，超时自毁</td><td>本来就要死</td></tr>
+</table>
+<p>唯一的死亡点是删 workspace（三件套 + PG 同事务清理）。这条红线是改造设计的地基：<b>任何新组件先回答"我的状态真身放哪、跟谁的生死绑定"。</b></p>
+
+<h2>你的施工：与 NAP 的关系（每个阶段做一次选择）</h2>
+<p>施工顺序讲完，回到你的工程。每个阶段你都要对 NAP 做一次三选一，并且把决策记下来：</p>
+<table class="map">
+  <tr><th>关系</th><th>什么时候选它</th><th>代价</th></tr>
+  <tr><td><b>抄设计</b>（自己写，照它的形状）</td><td>想彻底理解、或需要深度定制的一层</td><td>自己背维护成本</td></tr>
+  <tr><td><b>直接用</b>（部署它的组件）</td><td>商品化程度高、领域无关的件（如沙箱服务、浏览器服务）</td><td>接受它的边界与升级节奏</td></tr>
+  <tr><td><b>fork</b>（改它的代码自用）</td><td>设计对但需要中管改</td><td>永久承担合并上游的成本</td></tr>
+</table>
+<p>路线图（<a href="../../rebuild/ROADMAP.md">rebuild/ROADMAP.md</a>）的每个阶段都标注了"读 NAP 哪个文件"——先读后写，每个阶段一次三选一。诚实提醒：最容易犯的错是全选"抄设计"（把自己青或在大闸门型定制上），第二容易的是全选"直接用"（平台同质化，失去自建意义）——每个阶段独立判断。</p>
+
+<h2>检索练习</h2>
+
+<div class="quiz" data-answer="3">
+  <div class="q">1. 施工顺序里，"会话真身进 PG"（SSE 拦截器）排在 serving 模式之前，因为它是后者的——</div>
+  <ol class="opts">
+    <li>性能的保障</li>
+    <li>计费的依据</li>
+    <li>安全的前提</li>
+    <li>缩到零的前提</li>
+  </ol>
+  <div class="feedback" data-yes="正确。会话不在 pod 里，pod 才敢缩到零、敢换副本、敢冷启动——先有真身外置，后有伸缩自由。" data-no="想一想：pod 缩到零再唤醒而会话不丢，靠的是什么先存在？"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">2. 平台账本（PG）与 K8s 账本（etcd）的关系是？</div>
+  <ol class="opts">
+    <li>互为备份关系</li>
+    <li>两层递进套娃</li>
+    <li>同一个数据库</li>
+    <li>各管各无关联</li>
+  </ol>
+  <div class="feedback" data-yes="正确。env-runner 把平台账本的期望翻译成 K8s 账本的声明——三层套娃的声明式，每层只对自己下一层负责。" data-no="回忆 Control inversion：改平台账本 → env-runner 收敛成 K8s 对象 → K8s 收敛现实。"></div>
+</div>
+
+<div class="quiz" data-answer="4">
+  <div class="q">3. MCP 工具服务器这层存在的最大意义是？</div>
+  <ol class="opts">
+    <li>提升调用速度</li>
+    <li>节省模型 token</li>
+    <li>方便计费统计</li>
+    <li>能力与引擎解耦</li>
+  </ol>
+  <div class="feedback" data-yes="正确。平台能力做成工具层，换 core 不动工具——对改造 butterfly 至关重要：你们的领域工具将来住这层。" data-no="它解决的是"能力归属"：工具属于平台不属于引擎。"></div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <div class="q">4. 调度四关里，唤醒（ensureWorkspaceRunning）为什么排在容量门之后？</div>
+  <ol class="opts">
+    <li>前两关不过就不必花钱启动</li>
+    <li>唤醒必须在选副本之后</li>
+    <li>租约要先于一切存在</li>
+    <li>历史原因无深意</li>
+  </ol>
+  <div class="feedback" data-yes="正确。租约保证"这个会话没人在跑"、容量保证"装得下"，都过了才值得为它冷启动付费。" data-no="排序是省钱设计：便宜的检查在前，昂贵的动作在后。"></div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <div class="q">5. 自建平台时，沙箱/浏览器这类与业务无关、商品化程度高的组件，最合理的选择通常是？</div>
+  <ol class="opts">
+    <li>全部自己重写</li>
+    <li>直接用它的</li>
+    <li>永远不用它</li>
+    <li>全都 fork 一份</li>
+  </ol>
+  <div class="feedback" data-yes="正确。领域无关、标准化程度高的件，自写收益低；把自建火力留给真正差异化的一层（chat 骨架、工具注册）。“抄设计/直接用/fork”每个阶段独立判断。" data-no="回忆三选一表：商品化程度高、领域无关的件适合哪种关系？"></div>
+</div>
+
+<div class="next">
+  <p><b>下一步（强烈建议按序）</b>：① 补上 <a href="../../exercises/0001-mini-env-runner/TASK.md">练习 0001</a>——亲手写出第 1、2 步的缩小版（create/wait/kill/destroy），施工顺序就从"看懂"变成"写得出"；② 进路线图阶段 1（<a href="../../exercises/0002-bare-agent-chat/TASK.md">练习 0002：裸 agent 上 K8s</a>）——你的平台从第一行代码开始；③ 之后按 <a href="../../rebuild/ROADMAP.md">ROADMAP</a> 逐阶段推进，钻探层课程（ACP 可换引擎、MCP 中转、数据分层）按需点菜。</p>
+  <div class="ask">💬 <b>我是你的老师</b>：接缝那三栏表里的任何一个格子，都值得单独开一次讨论——改造方案成型前，把它当沙盘来用。</div>
+</div>
+
+<footer>
+  NAP 平台设计课程 · Lesson 08（会师）·
+  <a href="../reference/glossary.html">术语表</a> ·
+  <a href="../reference/compendium.html">总集篇</a> ·
+  <a href="0007-mcp-basics.html">上一课：MCP 基础</a>
+</footer>
+</main>
+</body>
+</html>
